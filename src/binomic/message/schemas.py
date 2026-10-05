@@ -14,6 +14,7 @@ class Message(BaseStruct):
     id: "UUID"
     name: str
     queue: str
+    enqueued_at: float
 
     args: list[Any] = field(default_factory=list)
     kwargs: dict[str, Any] = field(default_factory=dict)
@@ -25,6 +26,7 @@ class Message(BaseStruct):
                 "id": str(self.id),
                 "name": self.name,
                 "queue": self.queue,
+                "enqueued_at": self.enqueued_at,
                 "args": self.args,
                 "kwargs": self.kwargs,
             },
@@ -40,6 +42,7 @@ class Message(BaseStruct):
             id=UUID(data["id"]),
             name=data["name"],
             queue=data["queue"],
+            enqueued_at=data["enqueued_at"],
             args=data["args"],
             kwargs=data["kwargs"],
         )

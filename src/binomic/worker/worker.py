@@ -1,5 +1,6 @@
 import logging
 import time
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import anyio
@@ -73,7 +74,7 @@ class Worker:
         while not self._terminate.is_set():
             # TODO: Implement heartbeat logic within broker
 
-            logger.debug("Heartbeat ticked.")
+            logger.debug("Heartbeat ticked at %s.", datetime.now(UTC))
             await anyio.sleep(self._policy.heatbeat_interval)
 
     async def _run(self, entry: "Entry") -> None:

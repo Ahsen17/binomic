@@ -30,13 +30,11 @@ class AsyncredisBroker:
         self,
         client: "AsyncRedis",
         queues: Sequence[str],
-        *,
-        namespace_group: str = GROUP_NAMESPACE,
     ) -> None:
 
         self._client = client
         self._queues = queues
-        self._group = namespace_group
+        self._group = GROUP_NAMESPACE
 
     def get_stream_key(self, queue: str) -> str:
         """Namespace a queue name into its Redis stream key."""

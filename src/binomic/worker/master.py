@@ -56,6 +56,8 @@ class Master:
         )
 
         worker.start()
+        logger.info("Worker [%s] started.", ident)
+
         return worker
 
     def _stop_proc(self, worker: "Worker") -> None:
@@ -105,7 +107,7 @@ class Master:
 
                     # restart
                     self._subprocesses[ident] = self._run_proc(ident)
-                    logger.warning("Worker %s restarted", ident)
+                    logger.warning("Worker [%s] restarted", ident)
 
     async def aclose(self) -> None:
 

@@ -2,6 +2,7 @@ from typing import Any
 from uuid import UUID
 
 from msgspec import field, json
+from uuid_utils.compat import uuid7
 
 from binomic.base import BaseStruct
 
@@ -11,11 +12,11 @@ __all__ = ("Message",)
 class Message(BaseStruct):
     """Message for binomic."""
 
-    id: "UUID"
     name: str
     queue: str
     enqueued_at: float
 
+    id: "UUID" = field(default_factory=uuid7)
     args: list[Any] = field(default_factory=list)
     kwargs: dict[str, Any] = field(default_factory=dict)
 

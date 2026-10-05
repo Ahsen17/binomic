@@ -21,7 +21,7 @@ class task[**P, T]:  # noqa: N801
         mode: Literal["direct", "delay", "cron"] = "direct",
         delay: float | None = None,
         cron: str | None = None,
-    ) -> "TaskSpec[P, T]":
+    ) -> "TaskSpec[P, T] | task[P, T]":
 
         if mode == "delay" and delay is None:
             raise ValueError("delay must be specified for delay mode")

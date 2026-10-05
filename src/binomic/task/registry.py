@@ -1,14 +1,10 @@
 import inspect
 from collections.abc import Callable, Iterator
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 from binomic.base import BaseStruct
 
 from .exceptions import DuplicateTaskError, TaskNotFoundError
-
-if TYPE_CHECKING:
-    from .wrappers import TaskSpec
-
 
 __all__ = (
     "TaskRegistry",

@@ -1,81 +1,96 @@
 import logging
 import time
-from datetime import UTC, datetime
+from multiprocessing import Process
 from typing import TYPE_CHECKING
 
 import anyio
-from anyio import Event
 
 from binomic.base import SerializationError
+from binomic.broker import AsyncredisBroker, AsyncredisFactory, Entry
 from binomic.message import Message
-from binomic.task import TaskNotFoundError
+from binomic.task import TaskNotFoundError, autodiscover
+from binomic.task.registry import registry
+
+from .presence import SubprocessPresence
 
 if TYPE_CHECKING:
     from anyio.abc import TaskGroup
 
-    from binomic.broker import Broker, Entry
-    from binomic.task import TaskRegistry
-
     from .schemas import WorkerPolicy
 
-__alL__ = ("Worker",)
+
+__all__ = ("Worker",)
 
 
 logger = logging.getLogger(__name__)
 
 
-class Worker:
+class Worker(Process):
     """Binomic subprocessing worker."""
 
     def __init__(
         self,
         *,
-        broker: "Broker",
-        registry: "TaskRegistry",
+        redis_dsn: str,
+        module_name: str,
         policy: "WorkerPolicy",
     ) -> None:
 
-        self._broker = broker
-        self._registry = registry
-        self._policy = policy
+        super().__init__(name=policy.consumer)
 
-        self._semaphore = anyio.Semaphore(self._policy.concurrency)
+        self._redis_factory = AsyncredisFactory(redis_dsn)
+        self._policy = policy
+        self._registry = registry
+
+        self._broker: AsyncredisBroker | None = None
+        self._presence: SubprocessPresence | None = None
+
+        self._semaphore = anyio.Semaphore(policy.concurrency)
         self._timers: TaskGroup | None = None
-        self._terminate = Event()
+        self._terminate = anyio.Event()
+
+        autodiscover(module_name)
 
     async def arun(self) -> None:
 
-        async with anyio.create_task_group() as timers:
-            self._timers = timers
-            timers.start_soon(self._heartbeat)
+        if self._broker is None:
+            self._broker = AsyncredisBroker(
+                self._redis_factory.from_pool(),
+                queues=self._policy.queues,
+            )
 
-            try:
+        try:
+            async with anyio.create_task_group() as timers:
+                self._timers = timers
+                timers.start_soon(self._heartbeat)
+
                 async with anyio.create_task_group() as proc:
                     while not self._terminate.is_set():
-                        entires = await self._broker.fetch(
+                        entries = await self._broker.fetch(
                             consumer=self._policy.consumer,
                             count=self._policy.read_count,
                         )
 
-                        if not entires:
+                        if not entries:
                             await anyio.sleep(self._policy.poll_interval)
                             continue
 
-                        for entry in entires:
+                        for entry in entries:
                             await self._semaphore.acquire()
                             proc.start_soon(self._run, entry)
 
-            finally:
-                if not timers.cancel_scope.cancel_called:
-                    timers.cancel_scope.cancel()
+        finally:
+            await self.aclose()
 
     async def _heartbeat(self) -> None:
 
         while not self._terminate.is_set():
-            # TODO: Implement heartbeat logic within broker
+            if self._presence is None:
+                self._presence = SubprocessPresence(
+                    self._redis_factory.from_pool(),
+                )
 
-            logger.debug("Heartbeat ticked at %s.", datetime.now(UTC))
-            await anyio.sleep(self._policy.heatbeat_interval)
+            await self._presence.heartbeat(self._policy.consumer)
 
     async def _run(self, entry: "Entry") -> None:
 
@@ -98,6 +113,8 @@ class Worker:
 
         except BaseException as exc:
             if isinstance(exc, anyio.get_cancelled_exc_class()):
+                await self.aclose()
+
                 raise
 
             logger.error(
@@ -117,3 +134,8 @@ class Worker:
 
         if self._timers and not self._timers.cancel_scope.cancel_called:
             self._timers.cancel_scope.cancel()
+            self._timers = None
+
+    def run(self) -> None:
+
+        anyio.run(self.arun)

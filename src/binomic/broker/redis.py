@@ -1,28 +1,29 @@
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Final, cast
 
+from redis.asyncio import BlockingConnectionPool, ConnectionPool
+from redis.asyncio import Redis as AsyncRedis
 from redis.exceptions import ResponseError
 
 from binomic.base.constants import APP_NAME
 from binomic.message import Message
 
-from .protocols import Broker
-
 if TYPE_CHECKING:
     from uuid import UUID
-
-    from redis.asyncio import Redis as AsyncRedis
 
     from .types import Entry, Fields
 
 
-__all__ = ("AsyncredisBroker",)
+__all__ = (
+    "AsyncredisBroker",
+    "AsyncredisFactory",
+)
 
 
 GROUP_NAMESPACE: Final[str] = APP_NAME
 
 
-class AsyncredisBroker(Broker):
+class AsyncredisBroker:
     """Broker based on async redis."""
 
     def __init__(
@@ -141,3 +142,37 @@ class AsyncredisBroker(Broker):
                 reclaimed += 1
 
         return reclaimed
+
+
+class AsyncredisFactory:
+    """Factory for creating async Redis."""
+
+    def __init__(
+        self,
+        dsn: str,
+        *,
+        pool_size: int = 50,
+        timeout: int = 10,
+    ) -> None:
+
+        self._dsn = dsn
+        self._pool_size = pool_size
+        self._timeout = timeout
+
+        self._connpool: ConnectionPool | None = None
+
+    def from_pool(self) -> "AsyncRedis":
+
+        if self._connpool is None:
+            self._connpool = BlockingConnectionPool.from_url(
+                url=self._dsn,
+                max_connections=self._pool_size,
+                timeout=self._timeout,
+                decode_responses=True,
+            )
+
+        return AsyncRedis.from_pool(self._connpool)
+
+    def from_url(self) -> "AsyncRedis":
+
+        return AsyncRedis.from_url(self._dsn, decode_responses=True)

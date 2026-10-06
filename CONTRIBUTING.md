@@ -69,6 +69,22 @@ make check      # lint + 类型检查 + 全部测试
   mock；集成测试（`test_integration/`）使用真实服务；
 - 新增功能必须附带测试，覆盖率不得低于 80%。
 
+## 发布流程（维护者）
+
+发布链路：tag → draft release → 人工确认 → PyPI。完整时序：
+
+1. 在 pyproject 中更新 `version`，提交
+   `chore(release): prepare for vX.Y.Z` 并合入 `main`
+   （git-cliff 会跳过该提交，不进 CHANGELOG）；
+2. 在 main 上打 tag 并推送：`git tag vX.Y.Z && git push origin vX.Y.Z`；
+3. `release.yml` 自动创建 **draft** release，附带该版本
+   notes（git-cliff 生成）与 sdist/wheel 产物；
+4. 在本地运行 `make changelog` 再生成 CHANGELOG.md（须在 tag 存在之后运行，
+   新版本段落才会出现），以 `doc: update changelog for vX.Y.Z` 提交合入；
+5. 在 GitHub Releases 页面人工调整 draft：标记 pre-release 或正式，
+   确认后点击 Publish；
+6. 发布动作触发 `pypub.yml`，自动构建并上传 PyPI（trusted publishing）。
+
 ## 行为准则
 
 保持尊重与专业。对事不对人，欢迎新人提问。

@@ -20,6 +20,9 @@ build-backend = "hatchling.build"
 requires = ["hatchling", "setuptools"]
 
 [dependency-groups]
+dev = [
+    "git-cliff>=2.14.2",
+]
 lint = [
   "mypy[faster-cache]",
   "pre-commit",
@@ -230,10 +233,9 @@ show_missing = true
 [tool.coverage.run]
 branch = true
 concurrency = ["multiprocessing", "thread"]
-omit = ["*/tests/*", "__init__.py", "__main__.py"]
+omit = ["*/tests/*", "*/test_integration/*", "*/plugin/*", "__init__.py", "__main__.py"]
 parallel = true
 source = ["src"]
-
 
 [tool.git-cliff.git]
 commit_parsers = [

@@ -414,6 +414,16 @@ check: fix lint test-all		## Run all linting and tests
 check-all: fix lint test-all coverage	## Run all linting, tests, and coverage checks
 
 # =============================================================================
+# Changelog
+# =============================================================================
+
+.PHONY: changelog
+changelog:				## Regenerate CHANGELOG.md from git history (git-cliff)
+	@echo $(INFO) Updating CHANGELOG.md...
+	uv run git-cliff --output CHANGELOG.md
+	@echo $(OK) CHANGELOG.md updated
+
+# =============================================================================
 # Docs
 # =============================================================================
 

@@ -20,7 +20,11 @@ __all__ = (
 
 
 class Binomic(AsyncContextManagerMixin):
-    """Binomic working client."""
+    """Binomic working client.
+
+    Entering the async context starts the master process group and keeps
+    it running until the context exits.
+    """
 
     def __init__(
         self,
@@ -38,6 +42,11 @@ class Binomic(AsyncContextManagerMixin):
         self._broker: Broker | None = None
 
     async def submit(self, msg: "Message") -> None:
+        """Enqueue a message to the broker stream.
+
+        The broker is created lazily on the first submit, so constructing
+        the client performs no IO.
+        """
 
         if self._broker is None:
             self._broker = BrokerFactory(
@@ -92,6 +101,7 @@ class BinomicFactory:
         self._binomic: Binomic | None = None
 
     def create(self) -> "Binomic":
+        """Return the client, creating it on the first call."""
 
         if self._binomic is None:
             self._binomic = Binomic(

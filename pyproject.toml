@@ -28,7 +28,19 @@ requires = ["hatchling", "setuptools"]
 
 [dependency-groups]
 dev = [
-    "git-cliff>=2.14.2",
+    "git-cliff",
+]
+docs = [
+  "litestar",
+  "myst-parser",
+  "shibuya",
+  "sphinx",
+  "sphinx-autobuild",
+  "sphinx-copybutton",
+  "sphinx-design",
+  "sphinxcontrib-mermaid",
+  "sphinxext-opengraph",
+  "sphinx-tippy",
 ]
 lint = [
   "mypy[faster-cache]",

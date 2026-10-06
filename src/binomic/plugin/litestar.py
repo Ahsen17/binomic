@@ -6,13 +6,13 @@ if TYPE_CHECKING:
     from binomic.config import BinomicConfig
 
 try:
-    import litestar  # type: ignore # noqa: F401
-    from litestar.di import Provide  # type: ignore
-    from litestar.plugins import InitPluginProtocol  # type: ignore
+    import litestar  # noqa: F401
+    from litestar.di import Provide
+    from litestar.plugins import InitPluginProtocol
 
     if TYPE_CHECKING:
-        from litestar.config.app import AppConfig  # type: ignore
-        from litestar.data_structures import State  # type: ignore
+        from litestar.config.app import AppConfig
+        from litestar.datastructures import State
 
 except ImportError:
     raise ImportError(  # noqa: B904
@@ -23,7 +23,7 @@ except ImportError:
 __all__ = ("BinomicPlugin",)
 
 
-class BinomicPlugin(InitPluginProtocol):  # type: ignore
+class BinomicPlugin(InitPluginProtocol):
     """Binomic plugin for litestar."""
 
     _binomic_factory_state_key: ClassVar[str] = "binomic_factory"

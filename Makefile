@@ -341,13 +341,13 @@ lint: pre-commit type-check		## Run all linting
 coverage:				## Run tests and generate coverage report
 	@echo $(INFO) Running tests with coverage...
 ifeq ($(IS_WINDOWS),1)
-	uv run pytest tests tests_integration --cov -n auto
+	uv run pytest tests test_integration --cov -n auto
 	@echo $(INFO) Generating coverage reports...
 	uv run coverage html
 	uv run coverage xml
 	@echo $(OK) Coverage report generated
 else
-	@if uv run pytest tests tests_integration --cov -n auto; then \
+	@if uv run pytest tests test_integration --cov -n auto; then \
 		echo "$(OK) Tests passed with coverage ✨"; \
 	else \
 		echo "$(ERROR) Tests failed during coverage run ❌" >&2; \
@@ -378,10 +378,10 @@ endif
 test-integration:			## Run the integration test suite
 	@echo $(INFO) Running integration test cases...
 ifeq ($(IS_WINDOWS),1)
-	uv run pytest tests_integration -m integration
+	uv run pytest test_integration -m integration
 	@echo $(OK) All integration tests passed
 else
-	@if uv run pytest tests_integration -m integration; then \
+	@if uv run pytest test_integration -m integration; then \
 		echo "$(OK) All integration tests passed ✨"; \
 	else \
 		echo "$(ERROR) Some integration tests failed ❌" >&2; \

@@ -10,7 +10,12 @@ __all__ = ("Message",)
 
 
 class Message(BaseStruct):
-    """Message for binomic."""
+    """Message for binomic.
+
+    ``name`` is the registered task name, ``queue`` the target stream and
+    ``enqueued_at`` the submission timestamp; ``args`` and ``kwargs`` carry
+    the task call arguments.
+    """
 
     name: str
     queue: str

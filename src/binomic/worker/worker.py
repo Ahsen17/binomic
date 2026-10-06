@@ -4,9 +4,10 @@ from multiprocessing import Process
 from typing import TYPE_CHECKING
 
 import anyio
+from redis.asyncio import Redis as AsyncRedis
 
 from binomic.base import SerializationError
-from binomic.broker import AsyncredisBroker, AsyncredisFactory, Entry
+from binomic.broker import Broker, BrokerFactory, Entry
 from binomic.message import Message
 from binomic.task import TaskNotFoundError, autodiscover
 from binomic.task.registry import registry
@@ -31,20 +32,25 @@ class Worker(Process):
     def __init__(
         self,
         *,
+        broker_dsn: str,
         redis_dsn: str,
         module_name: str,
+        consumer: str,
         policy: "WorkerPolicy",
     ) -> None:
 
-        super().__init__(name=policy.consumer)
+        super().__init__(name=consumer)
 
-        self._redis_factory = AsyncredisFactory(redis_dsn)
+        self._broker_dsn = broker_dsn
+        self._redis_dsn = redis_dsn
+        self._module_name = module_name
+        self._consumer = consumer
         self._policy = policy
+
         self._registry = registry
+        self._broker: Broker | None = None
 
-        self._broker: AsyncredisBroker | None = None
         self._presence: SubprocessPresence | None = None
-
         self._semaphore = anyio.Semaphore(policy.concurrency)
         self._timers: TaskGroup | None = None
         self._terminate = anyio.Event()
@@ -54,54 +60,76 @@ class Worker(Process):
     async def arun(self) -> None:
 
         if self._broker is None:
-            self._broker = AsyncredisBroker(
-                self._redis_factory.from_pool(),
+            self._broker = BrokerFactory(
+                dsn=self._broker_dsn,
                 queues=self._policy.queues,
-            )
+            )()
+
+            await self._broker.initialize()
 
         try:
             async with anyio.create_task_group() as timers:
                 self._timers = timers
                 timers.start_soon(self._heartbeat)
 
-                async with anyio.create_task_group() as proc:
-                    while not self._terminate.is_set():
-                        entries = await self._broker.fetch(
-                            consumer=self._policy.consumer,
-                            count=self._policy.read_count,
-                        )
+                last_reclaim = time.monotonic()
 
-                        if not entries:
-                            await anyio.sleep(self._policy.poll_interval)
-                            continue
+                while not self._terminate.is_set():
+                    entries = await self._broker.acquire(
+                        consumer=self._consumer,
+                        count=self._policy.read_count,
+                    )
 
+                    if not entries:
+                        await anyio.sleep(self._policy.poll_interval)
+
+                    else:
                         for entry in entries:
                             await self._semaphore.acquire()
-                            proc.start_soon(self._run, entry)
+                            timers.start_soon(self._run, entry)
+
+                    now = time.monotonic()
+                    if now - last_reclaim < self._policy.reclaim_interval:
+                        continue
+
+                    last_reclaim = now
+                    await self._broker.reclaim(
+                        consumer=self._consumer,
+                        min_idle_ms=int(self._policy.task_timeout * 1000),
+                        count=100,
+                    )
 
         finally:
             await self.aclose()
 
     async def _heartbeat(self) -> None:
 
-        while not self._terminate.is_set():
-            if self._presence is None:
-                self._presence = SubprocessPresence(
-                    self._redis_factory.from_pool(),
-                )
+        if self._presence is None:
+            self._presence = SubprocessPresence(
+                AsyncRedis.from_url(self._redis_dsn, decode_responses=True),
+            )
 
-            await self._presence.heartbeat(self._policy.consumer)
+        while not self._terminate.is_set():
+            await self._presence.heartbeat(self._consumer)
+            logger.info(f"Worker [{self._consumer}] tiktoking: {time.time()}")  # noqa: G004
+
+            await anyio.sleep(self._policy.heartbeat_interval)
 
     async def _run(self, entry: "Entry") -> None:
 
+        _, _, fields = entry
+
+        if self._broker is None:
+            raise RuntimeError("Broker is not initialized.")
+
         try:
-            _, _, fields = entry
             msg = Message.from_json(fields.get("message"))
-            if time.time() - msg.enqueued_at > self._policy.task_timeout:
+            if (leftime := time.time() - msg.enqueued_at) > self._policy.task_timeout:
                 logger.warning("Message %s has expired", fields.get("id"))
                 return
 
-            await self._registry.get(msg.name)(*msg.args, **msg.kwargs)
+            with anyio.fail_after(leftime):
+                await self._registry.get(msg.name)(*msg.args, **msg.kwargs)
 
         except (SerializationError, TaskNotFoundError) as err:
             logger.error(
@@ -109,6 +137,10 @@ class Worker(Process):
                 fields.get("id"),
                 str(err),
             )
+            return
+
+        except TimeoutError as err:
+            logger.warning("Message %s timed out: %s", fields.get("id"), str(err))
             return
 
         except BaseException as exc:

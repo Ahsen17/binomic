@@ -103,8 +103,6 @@ dependencies = [
     { name = "anyio" },
     { name = "apscheduler" },
     { name = "msgspec" },
-    { name = "psycopg" },
-    { name = "psycopg-pool" },
     { name = "redis", extra = ["hiredis"] },
     { name = "uuid-utils" },
 ]
@@ -132,8 +130,6 @@ requires-dist = [
     { name = "anyio", specifier = ">=4.15.1" },
     { name = "apscheduler", specifier = ">=3.11.3" },
     { name = "msgspec", specifier = ">=0.22.0" },
-    { name = "psycopg", specifier = ">=3.3.6" },
-    { name = "psycopg-pool", specifier = ">=3.3.3" },
     { name = "redis", extras = ["hiredis"], specifier = ">=8.1.0" },
     { name = "uuid-utils", specifier = ">=1.0.0" },
 ]
@@ -753,31 +749,6 @@ dependencies = [
 sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/74/89/1f3e8e1fc3e97de0fa963495832f581f025f29471602a309e48808244292/pre_commit-4.6.2.tar.gz", hash = "sha256:8f5d7bfb021ecdbcd9d49d89847082dd24172ccde534390081a679ad046e2441" }
 wheels = [
     { url = "https://mirrors.cloud.tencent.com/pypi/packages/45/e2/bbb7129c9e7999a6b8ee9cca3b66486c25c423ab5a75f34071798b74ce94/pre_commit-4.6.2-py2.py3-none-any.whl", hash = "sha256:e2dde9a75d3bce11bd3831c26d134df00a2803c1d818be6a0383c3dcda25dc4e" },
-]
-
-[[package]]
-name = "psycopg"
-version = "3.3.6"
-source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }
-dependencies = [
-    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
-    { name = "tzdata", marker = "sys_platform == 'win32'" },
-]
-sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/76/26/3ea4ca5eaea1c0debcdf7ee7c1613fbe721dc27a03c461c0817ffd8a0601/psycopg-3.3.6.tar.gz", hash = "sha256:c081f2250df751a943036e42db6df4571c66cd0aabe8291a7a506512b12007d2" }
-wheels = [
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/4e/de/748bd7609c71cae5d737f0ba9192f19329f70180ecda8fff3cac02c5abe3/psycopg-3.3.6-py3-none-any.whl", hash = "sha256:a1db9f7148b06a28606767efaca51fa6f9398c5c0a3810519be69d7000bdb631" },
-]
-
-[[package]]
-name = "psycopg-pool"
-version = "3.3.3"
-source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }
-dependencies = [
-    { name = "typing-extensions" },
-]
-sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/74/5e/c0664b968b102ff68b811d999c728546c48d5c1eec03e3bbaf88c0cb4472/psycopg_pool-3.3.3.tar.gz", hash = "sha256:df87b5d9d0ad7db37f6cdad4fa8ce113d250f5997f6db38e9a99192fb67f9e1d" }
-wheels = [
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/5d/b4/452c6607a0f479465cd8a9b0d9956919fcb150050c1f83f9f11e6b8ee8dc/psycopg_pool-3.3.3-py3-none-any.whl", hash = "sha256:9b9cd6a4fcec47a410f7e82d408540e7f77b478509e91b44c1a5457a13e5ff37" },
 ]
 
 [[package]]

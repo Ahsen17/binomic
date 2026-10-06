@@ -3,11 +3,9 @@ import time
 from typing import TYPE_CHECKING
 
 import anyio
-
-from binomic.broker import AsyncredisFactory
+from redis.asyncio import Redis as AsyncRedis
 
 from .presence import ParentPresence
-from .schemas import WorkerPolicy
 from .worker import Worker
 
 if TYPE_CHECKING:
@@ -26,33 +24,28 @@ class Master:
     def __init__(
         self,
         *,
+        broker_dsn: str,
         redis_dsn: str,
         module_name: str,
         policy: "MasterPolicy",
     ) -> None:
 
+        self._broker_dsn = broker_dsn
         self._redis_dsn = redis_dsn
         self._module_name = module_name
         self._policy = policy
 
-        self._redis_factory = AsyncredisFactory(redis_dsn)
         self._subprocesses: dict[str, Worker] = {}
         self._presence: ParentPresence | None = None
 
     def _run_proc(self, ident: str) -> "Worker":
 
         worker = Worker(
+            broker_dsn=self._broker_dsn,
             redis_dsn=self._redis_dsn,
             module_name=self._module_name,
-            policy=WorkerPolicy(
-                consumer=ident,
-                queues=self._policy.queues,
-                concurrency=self._policy.concurrency,
-                task_timeout=self._policy.task_timeout,
-                read_count=self._policy.read_count,
-                poll_interval=self._policy.poll_interval,
-                heartbeat_interval=self._policy.heartbeat_interval,
-            ),
+            consumer=ident,
+            policy=self._policy.worker,
         )
 
         worker.start()
@@ -69,10 +62,6 @@ class Master:
     async def arun(self) -> None:
 
         try:
-            if self._presence is None:
-                self._presence = ParentPresence(self._redis_factory.from_pool())
-                await self._presence.initialize()
-
             for i in range(self._policy.workers):
                 ident = f"worker-{i}"
 
@@ -91,15 +80,25 @@ class Master:
 
     async def _visor(self) -> None:
 
+        if self._presence is None:
+            self._presence = ParentPresence(
+                AsyncRedis.from_url(
+                    self._redis_dsn,
+                    decode_responses=True,
+                )
+            )
+            await self._presence.initialize()
+
         while True:
-            await anyio.sleep(self._policy.heartbeat_interval * 2)
+            await anyio.sleep(self._policy.worker.heartbeat_interval * 2)
 
             now = time.time()
             status = await self._presence.presence()
 
             for ident in self._subprocesses:
                 if (
-                    now - status.get(ident, 0) > self._policy.heartbeat_interval * 3
+                    now - status.get(ident, 0)
+                    > self._policy.worker.heartbeat_interval * 3
                     or not self._subprocesses[ident].is_alive()
                 ):
                     worker = self._subprocesses[ident]

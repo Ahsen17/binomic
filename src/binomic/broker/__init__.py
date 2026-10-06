@@ -1,9 +1,11 @@
-from .redis import AsyncredisBroker, AsyncredisFactory
+from .handlers import BrokerFactory
+from .protocols import Broker
+from .redis import AsyncredisBroker
 from .types import Entry
 
 __all__ = (
     "AsyncredisBroker",
-    "AsyncredisFactory",
     "Broker",
+    "BrokerFactory",
     "Entry",
 )

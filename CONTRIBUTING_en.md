@@ -81,6 +81,22 @@ hand in principle**.
 
 ## Release Process (Maintainers)
 
+### Version Naming Rules
+
+Follow [SemVer 2.0.0](https://semver.org/); tags always carry the `v` prefix:
+
+- **Full releases**: `x.y.z`, e.g. `v1.2.0`;
+- **Pre-releases (beta)**: `x.y.z-beta.N`, e.g. `v1.2.0-beta.1`; `N` starts at
+  1 and increments within the same `x.y.z` series (`v1.2.0-beta.1`,
+  `v1.2.0-beta.2`, ...).
+
+An `x.y.z` version may ship several betas for validation before the final
+`x.y.z` release. The `v*` wildcard in `release.yml` matches both kinds;
+whether a release is marked as a pre-release is adjusted manually on the
+draft.
+
+### Release Sequence
+
 The release chain: tag → draft release → manual confirmation → PyPI. The full
 sequence:
 

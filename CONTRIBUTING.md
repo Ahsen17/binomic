@@ -71,6 +71,19 @@ make check      # lint + 类型检查 + 全部测试
 
 ## 发布流程（维护者）
 
+### 版本号命名规则
+
+遵循 [SemVer 2.0.0](https://semver.org/lang/zh-Hans/)，tag 一律带 `v` 前缀：
+
+- **正式版本**：`x.y.z`，如 `v1.2.0`；
+- **非正式版本（beta）**：`x.y.z-beta.N`，如 `v1.2.0-beta.1`；`N` 从 1 开始，
+  在同一 `x.y.z` 序列内顺延（`v1.2.0-beta.1`、`v1.2.0-beta.2`、…）。
+
+同一 `x.y.z` 可先发布若干 beta 验证，最终发布正式的 `x.y.z`。`release.yml`
+的 `v*` 通配对两类版本同样生效；是否标记为 pre-release 由人工在 draft 上调整。
+
+### 发布时序
+
 发布链路：tag → draft release → 人工确认 → PyPI。完整时序：
 
 1. 在 pyproject 中更新 `version`，提交

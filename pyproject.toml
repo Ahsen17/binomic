@@ -1,8 +1,10 @@
 [project]
 name = "binomic"
 version = "0.1.0"
-description = "Binomic - A customized async task framework."
+description = "Binomic - A lightweight, customizable asynchronous task framework for Python."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { name = "ahsen17", email = "mesailedward@qq.com" }
 ]

@@ -17,6 +17,11 @@ dependencies = [
     "uuid-utils>=1.0.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/Ahsen17/binomic"
+Repository = "https://github.com/Ahsen17/binomic"
+Issues = "https://github.com/Ahsen17/binomic/issues"
+
 [build-system]
 build-backend = "hatchling.build"
 requires = ["hatchling", "setuptools"]

@@ -1,7 +1,9 @@
+import time
+
 from binomic.task import task
 
 
 @task()
-def example() -> None:
+def example(index: int = 0) -> None:
 
-    print("Hello, World!")  # noqa: T201
+    print(f"[{index}] Current time: {time.time()}")  # noqa: T201

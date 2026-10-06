@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/Ahsen17/binomic"
+Homepage = "https://ahsen17.github.io/binomic"
 Repository = "https://github.com/Ahsen17/binomic"
 Issues = "https://github.com/Ahsen17/binomic/issues"
 

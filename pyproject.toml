@@ -11,8 +11,6 @@ dependencies = [
     "anyio>=4.15.1",
     "apscheduler>=3.11.3",
     "msgspec>=0.22.0",
-    "psycopg>=3.3.6",
-    "psycopg-pool>=3.3.3",
     "redis[hiredis]>=8.1.0",
     "uuid-utils>=1.0.0",
 ]
@@ -149,7 +147,7 @@ max-complexity = 12
   "TRY",
   "E721",
 ]
-"tests_integration/**/*.py" = [
+"test_integration/**/*.py" = [
   "A",
   "ARG",
   "B",
@@ -210,7 +208,7 @@ filterwarnings = [
   "ignore::DeprecationWarning",
   "ignore::SyntaxWarning:jieba.*"
 ]
-testpaths = ["tests", "tests_integration"]
+testpaths = ["tests", "test_integration"]
 
 [tool.coverage.report]
 fail_under = 80

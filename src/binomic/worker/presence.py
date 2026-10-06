@@ -1,5 +1,5 @@
 import time
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
 
 from msgspec import json
 
@@ -43,7 +43,10 @@ class ParentPresence:
 
     async def presence(self) -> dict[str, float]:
 
-        return json.decode(await self._client.get(ALIVE_PRESENCE_KEY) or "{}")
+        return cast(
+            "dict[str, float]",
+            json.decode(await self._client.get(ALIVE_PRESENCE_KEY) or "{}"),
+        )
 
 
 class SubprocessPresence:

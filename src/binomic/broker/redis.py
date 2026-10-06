@@ -1,51 +1,68 @@
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 
-from redis.asyncio import BlockingConnectionPool, ConnectionPool
+from redis.asyncio import BlockingConnectionPool
 from redis.asyncio import Redis as AsyncRedis
 from redis.exceptions import ResponseError
 
 from binomic.base.constants import APP_NAME
 from binomic.message import Message
 
+from .protocols import Broker
+from .types import Entry
+
 if TYPE_CHECKING:
     from uuid import UUID
 
-    from .types import Entry, Fields
+    from redis.asyncio import ConnectionPool
+
+    from .types import Fields
 
 
-__all__ = (
-    "AsyncredisBroker",
-    "AsyncredisFactory",
-)
+__all__ = ("AsyncredisBroker",)
 
 
 GROUP_NAMESPACE: Final[str] = APP_NAME
 
 
-class AsyncredisBroker:
+class AsyncredisBroker(Broker):
     """Broker based on async redis."""
 
     def __init__(
         self,
-        client: "AsyncRedis",
+        dsn: str,
         queues: Sequence[str],
+        **config: Any,
     ) -> None:
 
-        self._client = client
+        self._dsn = dsn
         self._queues = queues
+        self._config = config
         self._group = GROUP_NAMESPACE
+
+        self._connpool: ConnectionPool | None = None
 
     def get_stream_key(self, queue: str) -> str:
         """Namespace a queue name into its Redis stream key."""
 
         return f"{self._group}:{queue}"
 
+    @property
+    def client(self) -> "AsyncRedis":
+
+        if self._connpool is None:
+            self._connpool = BlockingConnectionPool.from_url(
+                url=self._dsn,
+                **self._config,
+            )
+
+        return AsyncRedis.from_pool(self._connpool)
+
     async def initialize(self) -> None:
 
         for queue in self._queues:
             try:
-                await self._client.xgroup_create(
+                await self.client.xgroup_create(
                     self.get_stream_key(queue),
                     groupname=self._group,
                     id="0",
@@ -58,7 +75,7 @@ class AsyncredisBroker:
 
     async def enqueue(self, msg: "Message") -> "UUID":
 
-        await self._client.xadd(
+        await self.client.xadd(
             name=self.get_stream_key(msg.queue),
             fields={
                 "id": str(msg.id),
@@ -68,9 +85,9 @@ class AsyncredisBroker:
 
         return msg.id
 
-    async def fetch(self, consumer: str, *, count: int) -> list["Entry"]:
+    async def acquire(self, consumer: str, *, count: int) -> list["Entry"]:
 
-        result = await self._client.xreadgroup(
+        result = await self.client.xreadgroup(
             groupname=self._group,
             consumername=consumer,
             streams={self.get_stream_key(q): ">" for q in self._queues},
@@ -81,22 +98,22 @@ class AsyncredisBroker:
         if not result:
             return entries
 
-        pairs = result.items() if isinstance(result, dict) else result
         queue_by_key = {self.get_stream_key(q): q for q in self._queues}
 
-        for key, msgs in pairs:
+        for key, msgs in cast(
+            "list[tuple[str, list[tuple[str, Fields]]]]",
+            result.items() if isinstance(result, dict) else result,
+        ):
             queue = queue_by_key[key]
             for msg_id, fields in msgs:
-                entries.append(
-                    (queue, cast("str", msg_id), cast("Fields", fields)),
-                )
+                entries.append(Entry(queue, msg_id, fields))
 
         return entries
 
     async def ack(self, entry: "Entry") -> int:
 
         queue, msg_id, _ = entry
-        return await self._client.xack(
+        return await self.client.xack(
             self.get_stream_key(queue),
             self._group,
             msg_id,
@@ -107,17 +124,17 @@ class AsyncredisBroker:
         consumer: str,
         *,
         min_idle_ms: int,
-        count: int = 100,
+        count: int,
     ) -> int:
 
         reclaimed = 0
         for queue in self._queues:
             try:
-                result = await self._client.xautoclaim(
+                result = await self.client.xautoclaim(
                     name=self.get_stream_key(queue),
                     groupname=self._group,
                     consumername=consumer,
-                    min_idle_ms=min_idle_ms,
+                    min_idle_time=min_idle_ms,
                     start_id="0-0",
                     count=count,
                 )
@@ -135,42 +152,14 @@ class AsyncredisBroker:
             ):
                 msg = Message.from_json(fields.get("message"))
                 await self.enqueue(msg)
-                await self.ack((queue, msg_id, fields))
+                await self.ack(Entry(queue, msg_id, fields))
 
                 reclaimed += 1
 
         return reclaimed
 
+    async def aclose(self) -> None:
 
-class AsyncredisFactory:
-    """Factory for creating async Redis."""
-
-    def __init__(
-        self,
-        dsn: str,
-        *,
-        pool_size: int = 50,
-        timeout: int = 10,
-    ) -> None:
-
-        self._dsn = dsn
-        self._pool_size = pool_size
-        self._timeout = timeout
-
-        self._connpool: ConnectionPool | None = None
-
-    def from_pool(self) -> "AsyncRedis":
-
-        if self._connpool is None:
-            self._connpool = BlockingConnectionPool.from_url(
-                url=self._dsn,
-                max_connections=self._pool_size,
-                timeout=self._timeout,
-                decode_responses=True,
-            )
-
-        return AsyncRedis.from_pool(self._connpool)
-
-    def from_url(self) -> "AsyncRedis":
-
-        return AsyncRedis.from_url(self._dsn, decode_responses=True)
+        if self._connpool is not None:
+            await self._connpool.disconnect()
+            self._connpool = None

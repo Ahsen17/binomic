@@ -1,4 +1,4 @@
-## [unreleased]
+## [0.1.0] - 2026-10-06
 
 ### 🚀 Features
 
@@ -14,6 +14,7 @@
 - Broker protocol and redis broker impl
 - Binomic plugin for litestar
 - Binomic client with factory and config
+- Makefile within changelog
 
 ### 🐛 Bug Fixes
 
@@ -24,3 +25,31 @@
 
 - Task decorator rebuild
 - Binomic worker rebuild
+
+### 📚 Documentation
+
+- Changelog
+- Add bilingual README with cross-links
+- Add bilingual contributing guide with AI-assisted code policy
+- Document the maintainer release process
+- Define release version naming rules
+- Build bilingual Sphinx documentation site
+
+### 🧪 Testing
+
+- Unit tests
+- Integration tests
+
+### 📦 Build System
+
+- Add MIT license and declare it in package metadata
+- Add project URLs to package metadata
+
+### ⚙️ Miscellaneous Tasks
+
+- Test action
+
+### 💼 Other
+
+- Add tag-triggered draft release workflow
+- Skip test pipeline for docs-only changes

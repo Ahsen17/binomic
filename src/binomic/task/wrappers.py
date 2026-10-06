@@ -14,34 +14,32 @@ __all__ = (
 )
 
 
-class task[**P, T]:  # noqa: N801
-    def __new__(
-        cls,
-        *,
-        mode: Literal["direct", "delay", "cron"] = "direct",
-        delay: float | None = None,
-        cron: str | None = None,
-    ) -> "TaskSpec[P, T] | task[P, T]":
+def task[**P, T](
+    *,
+    mode: Literal["direct", "delay", "cron"] = "direct",
+    delay: float | None = None,
+    cron: str | None = None,
+) -> Callable[[Callable[P, T]], TaskSpec[P, T]]:
 
-        if mode == "delay" and delay is None:
-            raise ValueError("delay must be specified for delay mode")
-        if mode == "cron" and cron is None:
-            raise ValueError("cron must be specified for cron mode")
+    if mode == "delay" and delay is None:
+        raise ValueError("delay must be specified for delay mode")
+    if mode == "cron" and cron is None:
+        raise ValueError("cron must be specified for cron mode")
 
-        def decorator(fn: Callable[P, T]) -> TaskSpec[P, T]:
+    def decorator(fn: Callable[P, T]) -> TaskSpec[P, T]:
 
-            registry.register(
-                spec := TaskSpec(
-                    name=fn.__name__.lower(),
-                    fn=fn,
-                    mode=mode,
-                    delay=delay,
-                    cron=cron,
-                )
+        registry.register(
+            spec := TaskSpec(
+                name=fn.__name__.lower(),
+                fn=fn,
+                mode=mode,
+                delay=delay,
+                cron=cron,
             )
-            return spec
+        )
+        return spec
 
-        return decorator
+    return decorator
 
 
 def autodiscover(

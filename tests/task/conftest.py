@@ -14,9 +14,14 @@ def register_spec(
 ) -> Callable[..., TaskSpec]:
     """Register ad-hoc task specs with automatic teardown via isolate_registry."""
 
-    def _register(name: str, fn: Callable[..., Any], **spec_kwargs: Any) -> TaskSpec:
+    def _register(
+        name: str,
+        fn: Callable[..., Any],
+        queue: str = "default",
+        **spec_kwargs: Any,
+    ) -> TaskSpec:
 
-        spec = TaskSpec(name=name, fn=fn, **spec_kwargs)
+        spec = TaskSpec(name=name, queue=queue, fn=fn, **spec_kwargs)
         isolate_registry.register(spec)
         return spec
 

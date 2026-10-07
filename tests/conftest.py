@@ -40,12 +40,15 @@ def isolate_registry() -> Iterator[TaskRegistry]:
 
 @pytest.fixture
 def make_message() -> Callable[..., Message]:
-    """Build Message with per-test overrides visible in the test body."""
+    """Build Message with per-test overrides visible in the test body.
+
+    ``enqueued_at`` defaults to the current time; build a ``Message`` directly
+    when a test needs an explicitly unstamped one.
+    """
 
     def _make(
         *,
         name: str = "noop",
-        queue: str = "default",
         enqueued_at: float | None = None,
         args: list[Any] | None = None,
         kwargs: dict[str, Any] | None = None,
@@ -53,7 +56,6 @@ def make_message() -> Callable[..., Message]:
 
         return Message(
             name=name,
-            queue=queue,
             enqueued_at=time.time() if enqueued_at is None else enqueued_at,
             args=args if args is not None else [],
             kwargs=kwargs if kwargs is not None else {},

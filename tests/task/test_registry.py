@@ -13,17 +13,17 @@ def noop() -> None:
 class TestTaskRegistry:
     def test_register_and_get(self, isolate_registry: TaskRegistry) -> None:
 
-        spec = TaskSpec(name="alpha", fn=noop)
+        spec = TaskSpec(name="alpha", queue="default", fn=noop)
         isolate_registry.register(spec)
 
         assert isolate_registry.get("alpha") is spec
 
     def test_register_duplicate_raises(self, isolate_registry: TaskRegistry) -> None:
 
-        isolate_registry.register(TaskSpec(name="alpha", fn=noop))
+        isolate_registry.register(TaskSpec(name="alpha", queue="default", fn=noop))
 
         with pytest.raises(DuplicateTaskError, match="'alpha' already exists"):
-            isolate_registry.register(TaskSpec(name="alpha", fn=noop))
+            isolate_registry.register(TaskSpec(name="alpha", queue="default", fn=noop))
 
     def test_get_missing_raises(self, isolate_registry: TaskRegistry) -> None:
 
@@ -32,7 +32,10 @@ class TestTaskRegistry:
 
     def test_iterates_over_specs(self, isolate_registry: TaskRegistry) -> None:
 
-        specs = [TaskSpec(name="alpha", fn=noop), TaskSpec(name="beta", fn=noop)]
+        specs = [
+            TaskSpec(name="alpha", queue="default", fn=noop),
+            TaskSpec(name="beta", queue="default", fn=noop),
+        ]
         for spec in specs:
             isolate_registry.register(spec)
 
@@ -40,7 +43,7 @@ class TestTaskRegistry:
 
     def test_contains_by_name(self, isolate_registry: TaskRegistry) -> None:
 
-        isolate_registry.register(TaskSpec(name="alpha", fn=noop))
+        isolate_registry.register(TaskSpec(name="alpha", queue="default", fn=noop))
 
         assert "alpha" in isolate_registry
         assert "ghost" not in isolate_registry
@@ -48,7 +51,7 @@ class TestTaskRegistry:
     def test_len_counts_specs(self, isolate_registry: TaskRegistry) -> None:
 
         assert len(isolate_registry) == 0
-        isolate_registry.register(TaskSpec(name="alpha", fn=noop))
+        isolate_registry.register(TaskSpec(name="alpha", queue="default", fn=noop))
 
         assert len(isolate_registry) == 1
 
@@ -56,7 +59,7 @@ class TestTaskRegistry:
 class TestTaskSpec:
     async def test_call_invokes_sync_fn(self) -> None:
 
-        spec = TaskSpec(name="alpha", fn=lambda a, b: a + b)
+        spec = TaskSpec(name="alpha", queue="default", fn=lambda a, b: a + b)
 
         assert await spec(1, b=2) == 3
 
@@ -65,7 +68,7 @@ class TestTaskSpec:
         async def fetch(value: str) -> str:
             return value.upper()
 
-        spec = TaskSpec(name="fetch", fn=fetch)
+        spec = TaskSpec(name="fetch", queue="default", fn=fetch)
 
         result = cast("str", await spec("ok"))
 
@@ -73,7 +76,7 @@ class TestTaskSpec:
 
     def test_mode_defaults_to_direct(self) -> None:
 
-        spec = TaskSpec(name="alpha", fn=noop)
+        spec = TaskSpec(name="alpha", queue="default", fn=noop)
 
         assert spec.mode == "direct"
         assert spec.delay is None

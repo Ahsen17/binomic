@@ -1,6 +1,6 @@
 import logging
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 import anyio
 from redis.asyncio import Redis as AsyncRedis
@@ -16,6 +16,10 @@ __all__ = ("Master",)
 
 
 logger = logging.getLogger(__name__)
+
+
+# How long a terminated worker is given to exit.
+TERMINATE_TIMEOUT: Final[float] = 5.0
 
 
 class Master:
@@ -57,7 +61,15 @@ class Master:
 
         if worker.is_alive():
             worker.terminate()
-            worker.join()
+            worker.join(timeout=TERMINATE_TIMEOUT)
+
+            if worker.is_alive():
+                logger.warning(
+                    "Worker [%s] did not stop within %ss, killing it",
+                    worker.name,
+                    TERMINATE_TIMEOUT,
+                )
+                worker.kill()
 
     async def arun(self) -> None:
 
@@ -82,10 +94,7 @@ class Master:
 
         if self._presence is None:
             self._presence = ParentPresence(
-                AsyncRedis.from_url(
-                    self._redis_dsn,
-                    decode_responses=True,
-                )
+                AsyncRedis.from_url(self._redis_dsn, decode_responses=True),
             )
             await self._presence.initialize()
 
@@ -110,5 +119,8 @@ class Master:
 
     async def aclose(self) -> None:
 
-        for proc in self._subprocesses.values():
-            await anyio.to_thread.run_sync(self._stop_proc, proc)
+        # Cleanup must run to completion: inside a cancelled scope `to_thread`
+        # aborts before the thread is submitted, stopping no worker at all.
+        with anyio.CancelScope(shield=True):
+            for proc in self._subprocesses.values():
+                await anyio.to_thread.run_sync(self._stop_proc, proc)

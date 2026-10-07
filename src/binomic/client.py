@@ -167,7 +167,10 @@ class Binomic(AsyncContextManagerMixin):
                 tg.cancel_scope.cancel()
 
         finally:
-            await master.aclose()
+            try:
+                await master.aclose()
+            finally:
+                await self.aclose()
 
 
 class BinomicFactory:

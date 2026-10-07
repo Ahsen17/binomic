@@ -14,8 +14,6 @@ from .types import Entry
 if TYPE_CHECKING:
     from uuid import UUID
 
-    from redis.asyncio import ConnectionPool
-
     from .types import Fields
 
 
@@ -40,7 +38,7 @@ class AsyncredisBroker(Broker):
         self._config = config
         self._group = GROUP_NAMESPACE
 
-        self._connpool: ConnectionPool | None = None
+        self._client: AsyncRedis | None = None
 
     def get_stream_key(self, queue: str) -> str:
         """Namespace a queue name into its Redis stream key."""
@@ -50,13 +48,15 @@ class AsyncredisBroker(Broker):
     @property
     def client(self) -> "AsyncRedis":
 
-        if self._connpool is None:
-            self._connpool = BlockingConnectionPool.from_url(
-                url=self._dsn,
-                **self._config,
+        if self._client is None:
+            self._client = AsyncRedis.from_pool(
+                BlockingConnectionPool.from_url(
+                    url=self._dsn,
+                    **self._config,
+                ),
             )
 
-        return AsyncRedis.from_pool(self._connpool)
+        return self._client
 
     async def initialize(self) -> None:
 
@@ -160,6 +160,6 @@ class AsyncredisBroker(Broker):
 
     async def aclose(self) -> None:
 
-        if self._connpool is not None:
-            await self._connpool.disconnect()
-            self._connpool = None
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None

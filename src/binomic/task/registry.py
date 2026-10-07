@@ -14,6 +14,7 @@ __all__ = (
 
 class TaskSpec[**P, T](BaseStruct):
     name: str
+    queue: str
     fn: Callable[P, T]
 
     mode: Literal["direct", "delay", "cron"] = "direct"

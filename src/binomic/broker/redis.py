@@ -73,10 +73,10 @@ class AsyncredisBroker(Broker):
                 if "BUSYGROUP" not in str(err):
                     raise
 
-    async def enqueue(self, msg: "Message") -> "UUID":
+    async def enqueue(self, queue: str, msg: "Message") -> "UUID":
 
         await self.client.xadd(
-            name=self.get_stream_key(msg.queue),
+            name=self.get_stream_key(queue),
             fields={
                 "id": str(msg.id),
                 "message": msg.to_json(),
@@ -151,7 +151,7 @@ class AsyncredisBroker(Broker):
                 msgs,
             ):
                 msg = Message.from_json(fields.get("message"))
-                await self.enqueue(msg)
+                await self.enqueue(queue, msg)
                 await self.ack(Entry(queue, msg_id, fields))
 
                 reclaimed += 1

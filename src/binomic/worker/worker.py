@@ -138,12 +138,16 @@ class Worker(SpawnProcess):
 
         try:
             msg = Message.from_json(fields.get("message"))
-            if (leftime := time.time() - msg.enqueued_at) > self._policy.task_timeout:
+
+            # An unstamped message has an unknown age; treat it as freshly enqueued.
+            enqueued_at = msg.enqueued_at if msg.enqueued_at is not None else time.time()
+
+            if (elapsed := time.time() - enqueued_at) > self._policy.task_timeout:
                 logger.warning("Message %s has expired", fields.get("id"))
                 return
 
-            with anyio.fail_after(leftime):
-                await self._registry.get(msg.name)(*msg.args, **msg.kwargs)
+            with anyio.fail_after(self._policy.task_timeout - elapsed):
+                await registry.get(msg.name)(*msg.args, **msg.kwargs)
 
         except (SerializationError, TaskNotFoundError) as err:
             logger.error(

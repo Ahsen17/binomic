@@ -1,13 +1,13 @@
 import logging
 import time
-from multiprocessing import Process
+from multiprocessing.context import SpawnProcess
 from typing import TYPE_CHECKING
 
 import anyio
 from redis.asyncio import Redis as AsyncRedis
 
 from binomic.base import SerializationError
-from binomic.broker import Broker, BrokerFactory, Entry
+from binomic.broker import BrokerFactory, Entry
 from binomic.message import Message
 from binomic.task import TaskNotFoundError, autodiscover
 from binomic.task.registry import registry
@@ -16,6 +16,8 @@ from .presence import SubprocessPresence
 
 if TYPE_CHECKING:
     from anyio.abc import TaskGroup
+
+    from binomic.broker import Broker
 
     from .schemas import WorkerPolicy
 
@@ -26,8 +28,12 @@ __all__ = ("Worker",)
 logger = logging.getLogger(__name__)
 
 
-class Worker(Process):
-    """Binomic subprocessing worker."""
+class Worker(SpawnProcess):
+    """Binomic subprocessing worker.
+
+    Spawned rather than forked: a forked child inherits the parent's running
+    event loop, so ``anyio.run`` cannot start in it.
+    """
 
     def __init__(
         self,
@@ -47,15 +53,15 @@ class Worker(Process):
         self._consumer = consumer
         self._policy = policy
 
-        self._registry = registry
         self._broker: Broker | None = None
 
         self._presence: SubprocessPresence | None = None
-        self._semaphore = anyio.Semaphore(policy.concurrency)
         self._timers: TaskGroup | None = None
-        self._terminate = anyio.Event()
 
-        autodiscover(module_name)
+        # A spawned child only receives picklable data, so the AnyIO primitives
+        # are created in `arun` instead of here.
+        self._semaphore: anyio.Semaphore | None = None
+        self._terminate: anyio.Event | None = None
 
     async def arun(self) -> None:
 
@@ -67,14 +73,22 @@ class Worker(Process):
 
             await self._broker.initialize()
 
+        # Task discovery happens in the process that executes the tasks.
+        autodiscover(self._module_name)
+
+        semaphore = anyio.Semaphore(self._policy.concurrency)
+        terminate = anyio.Event()
+        self._semaphore = semaphore
+        self._terminate = terminate
+
         try:
             async with anyio.create_task_group() as timers:
                 self._timers = timers
-                timers.start_soon(self._heartbeat)
+                timers.start_soon(self._heartbeat, terminate)
 
                 last_reclaim = time.monotonic()
 
-                while not self._terminate.is_set():
+                while not terminate.is_set():
                     entries = await self._broker.acquire(
                         consumer=self._consumer,
                         count=self._policy.read_count,
@@ -85,7 +99,7 @@ class Worker(Process):
 
                     else:
                         for entry in entries:
-                            await self._semaphore.acquire()
+                            await semaphore.acquire()
                             timers.start_soon(self._run, entry)
 
                     now = time.monotonic()
@@ -102,14 +116,14 @@ class Worker(Process):
         finally:
             await self.aclose()
 
-    async def _heartbeat(self) -> None:
+    async def _heartbeat(self, terminate: "anyio.Event") -> None:
 
         if self._presence is None:
             self._presence = SubprocessPresence(
                 AsyncRedis.from_url(self._redis_dsn, decode_responses=True),
             )
 
-        while not self._terminate.is_set():
+        while not terminate.is_set():
             await self._presence.heartbeat(self._consumer)
             logger.info(f"Worker [{self._consumer}] tiktoking: {time.time()}")  # noqa: G004
 
@@ -157,11 +171,12 @@ class Worker(Process):
 
         finally:
             await self._broker.ack(entry)
-            self._semaphore.release()
+            if self._semaphore is not None:
+                self._semaphore.release()
 
     async def aclose(self) -> None:
 
-        if not self._terminate.is_set():
+        if self._terminate is not None and not self._terminate.is_set():
             self._terminate.set()
 
         if self._timers and not self._timers.cancel_scope.cancel_called:

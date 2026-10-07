@@ -1,3 +1,4 @@
+import time
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Final, cast
 
@@ -151,6 +152,11 @@ class AsyncredisBroker(Broker):
                 msgs,
             ):
                 msg = Message.from_json(fields.get("message"))
+
+                # Re-delivery is a new submission: keeping the original stamp
+                # would make the worker drop it as expired on arrival.
+                msg.enqueued_at = time.time()
+
                 await self.enqueue(queue, msg)
                 await self.ack(Entry(queue, msg_id, fields))
 

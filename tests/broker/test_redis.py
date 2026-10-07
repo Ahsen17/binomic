@@ -1,3 +1,4 @@
+import time
 from collections.abc import Callable
 
 from binomic.broker import AsyncredisBroker, Entry
@@ -156,6 +157,26 @@ class TestReclaim:
 
         assert len(redelivered) == 1
         assert redelivered[0].fields["id"] == stale.fields["id"]
+
+    async def test_restamps_enqueued_at_on_redelivery(
+        self,
+        broker: AsyncredisBroker,
+        make_message: Callable[..., Message],
+    ) -> None:
+
+        msg = make_message(enqueued_at=time.time() - 7200)
+        await broker.enqueue("default", msg)
+        await broker.acquire("dead-consumer", count=10)
+
+        await broker.reclaim("consumer-1", min_idle_ms=0, count=10)
+
+        redelivered = (await broker.acquire("consumer-1", count=10))[0]
+        restored = Message.from_json(redelivered.fields["message"])
+
+        # Re-delivery is a fresh submission: keeping the old stamp would make the
+        # worker drop the message as expired the moment it arrives.
+        assert restored.enqueued_at is not None
+        assert restored.enqueued_at > time.time() - 60
 
     async def test_skips_queues_without_group(
         self, make_broker: Callable[..., AsyncredisBroker]

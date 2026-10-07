@@ -67,7 +67,7 @@ url = "https://mirrors.cloud.tencent.com/pypi/simple/"
 default-groups = "all"
 
 [tool.ruff]
-src = ["src", "tests"]
+src = ["src", "tests", "test_integration"]
 line-length = 90
 target-version = "py312"
 
@@ -202,7 +202,7 @@ docstring-code-format = true
 docstring-code-line-length = 88
 
 [tool.mypy]
-packages = ["binomic", "tests"]
+packages = ["binomic", "tests", "test_integration"]
 strict = true
 disallow_any_generics = false
 implicit_reexport = false
@@ -220,8 +220,18 @@ enable_error_code = [
 show_error_codes = true
 pretty = true
 
+# APScheduler ships neither stubs nor a `py.typed` marker. Its surface is small
+# and exercised by the client tests, so it is not worth tracking down stubs.
+[[tool.mypy.overrides]]
+module = ["apscheduler.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 addopts = ["--import-mode=importlib", "--asyncio-mode=auto"]
+# `import-mode=importlib` makes test packages importable through `sys.modules`
+# only. A spawned worker resolves `module_name` in a fresh interpreter, so the
+# repository root has to be on `sys.path` for it to find the test task module.
+pythonpath = ["."]
 markers = [
   "pg: integration tests that require a real PostgreSQL (set DAB_TEST_PG_DSN to enable)",
   "integration: end-to-end tests that drive the real assembly pipeline in subprocesses",

@@ -8,6 +8,7 @@ import anyio
 from anyio import AsyncContextManagerMixin
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from binomic.broker import Broker, BrokerFactory
 from binomic.message import Message
@@ -82,8 +83,8 @@ class Binomic(AsyncContextManagerMixin):
         if self._broker is None:
             raise RuntimeError("Run client `arun` before submitting messages.")
 
-        # Stamped here rather than at construction: delay waits for its deadline and
-        # cron reuses one Message across firings.
+        # Stamped here rather than at construction: delay waits for its deadline,
+        # and cron and interval reuse one Message across firings.
         msg.enqueued_at = time.time()
 
         await self._broker.enqueue(queue, msg)
@@ -114,6 +115,20 @@ class Binomic(AsyncContextManagerMixin):
         self._scheduler.add_job(
             func=self._enqueue,
             trigger=CronTrigger.from_crontab(spec.cron, timezone=UTC),
+            args=(spec.queue, Message(name=spec.name)),
+        )
+
+    def _interval(self, spec: "TaskSpec") -> None:
+
+        if spec.mode != "interval" or spec.interval is None:
+            raise ValueError("Message is not an interval task.")
+
+        if self._scheduler is None:
+            raise RuntimeError("Run client `arun` before submitting messages.")
+
+        self._scheduler.add_job(
+            func=self._enqueue,
+            trigger=IntervalTrigger(seconds=spec.interval, timezone=UTC),
             args=(spec.queue, Message(name=spec.name)),
         )
 
@@ -156,10 +171,13 @@ class Binomic(AsyncContextManagerMixin):
         try:
             await self.arun()
 
-            # auto register cron tasks
+            # auto register cron and interval tasks
             for spec in registry:
                 if spec.mode == "cron":
                     self._cron(spec)
+
+                if spec.mode == "interval":
+                    self._interval(spec)
 
             async with anyio.create_task_group() as tg:
                 tg.start_soon(master.arun)

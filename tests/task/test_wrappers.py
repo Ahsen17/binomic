@@ -1,5 +1,7 @@
 import logging
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -10,19 +12,20 @@ from binomic.task.wrappers import autodiscover, task
 class TestTaskDecorator:
     def test_registers_lowercase_name(self, isolate_registry: TaskRegistry) -> None:
 
-        @task()
+        @task("default", mode="direct")
         def DoWork() -> str:
             return "ok"
 
         assert "dowork" in isolate_registry
         assert isinstance(DoWork, TaskSpec)
         assert DoWork.name == "dowork"
+        assert DoWork.queue == "default"
 
     async def test_decorated_object_is_callable(
         self, isolate_registry: TaskRegistry
     ) -> None:
 
-        @task()
+        @task("default", mode="direct")
         def alpha() -> str:
             return "ok"
 
@@ -31,17 +34,23 @@ class TestTaskDecorator:
 
     def test_delay_mode_requires_delay(self) -> None:
 
+        # The overloads reject this call statically, so it is only reachable from
+        # untyped callers; the runtime guard still has to hold for those.
+        declare: Callable[..., Any] = task
+
         with pytest.raises(ValueError, match="delay must be specified"):
-            task(mode="delay")
+            declare("default", mode="delay")
 
     def test_cron_mode_requires_cron(self) -> None:
 
+        declare: Callable[..., Any] = task
+
         with pytest.raises(ValueError, match="cron must be specified"):
-            task(mode="cron")
+            declare("default", mode="cron")
 
     def test_delay_mode_accepts_delay(self, isolate_registry: TaskRegistry) -> None:
 
-        @task(mode="delay", delay=5.0)
+        @task("default", mode="delay", delay=5.0)
         def later() -> None: ...
 
         registered = registry.get("later")
@@ -51,13 +60,49 @@ class TestTaskDecorator:
 
     def test_cron_mode_accepts_cron(self, isolate_registry: TaskRegistry) -> None:
 
-        @task(mode="cron", cron="* * * * *")
+        @task("default", mode="cron", cron="* * * * *")
         def scheduled() -> None: ...
 
         registered = registry.get("scheduled")
 
         assert registered.mode == "cron"
         assert registered.cron == "* * * * *"
+
+    def test_cron_mode_rejects_parameterized_fn(
+        self, isolate_registry: TaskRegistry
+    ) -> None:
+
+        with pytest.raises(ValueError, match="Cron/Interval mode requires no arguments"):
+
+            @task("default", mode="cron", cron="* * * * *")
+            def scheduled_twice(value: int) -> None: ...
+
+    def test_interval_mode_requires_interval(self) -> None:
+
+        declare: Callable[..., Any] = task
+
+        with pytest.raises(ValueError, match="interval must be specified"):
+            declare("default", mode="interval")
+
+    def test_interval_mode_accepts_interval(self, isolate_registry: TaskRegistry) -> None:
+
+        @task("default", mode="interval", interval=10.0)
+        def heartbeat() -> None: ...
+
+        registered = registry.get("heartbeat")
+
+        assert registered.mode == "interval"
+        assert registered.interval == 10.0
+        assert registered.queue == "default"
+
+    def test_interval_mode_rejects_parameterized_fn(
+        self, isolate_registry: TaskRegistry
+    ) -> None:
+
+        with pytest.raises(ValueError, match="Cron/Interval mode requires no arguments"):
+
+            @task("default", mode="interval", interval=10.0)
+            def heartbeat_twice(value: int) -> None: ...
 
 
 def make_package(
@@ -86,7 +131,8 @@ class TestAutodiscover:
             tmp_path,
             monkeypatch,
             "fakeapp",
-            "from binomic.task import task\n\n\n@task()\ndef alpha() -> None: ...\n",
+            "from binomic.task import task\n\n\n"
+            '@task("default", mode="direct")\ndef alpha() -> None: ...\n',
         )
 
         assert autodiscover("fakeapp") == ["fakeapp.tasks"]

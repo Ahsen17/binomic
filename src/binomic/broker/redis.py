@@ -1,3 +1,4 @@
+import time
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Final, cast
 
@@ -13,8 +14,6 @@ from .types import Entry
 
 if TYPE_CHECKING:
     from uuid import UUID
-
-    from redis.asyncio import ConnectionPool
 
     from .types import Fields
 
@@ -40,7 +39,7 @@ class AsyncredisBroker(Broker):
         self._config = config
         self._group = GROUP_NAMESPACE
 
-        self._connpool: ConnectionPool | None = None
+        self._client: AsyncRedis | None = None
 
     def get_stream_key(self, queue: str) -> str:
         """Namespace a queue name into its Redis stream key."""
@@ -50,13 +49,15 @@ class AsyncredisBroker(Broker):
     @property
     def client(self) -> "AsyncRedis":
 
-        if self._connpool is None:
-            self._connpool = BlockingConnectionPool.from_url(
-                url=self._dsn,
-                **self._config,
+        if self._client is None:
+            self._client = AsyncRedis.from_pool(
+                BlockingConnectionPool.from_url(
+                    url=self._dsn,
+                    **self._config,
+                ),
             )
 
-        return AsyncRedis.from_pool(self._connpool)
+        return self._client
 
     async def initialize(self) -> None:
 
@@ -73,10 +74,10 @@ class AsyncredisBroker(Broker):
                 if "BUSYGROUP" not in str(err):
                     raise
 
-    async def enqueue(self, msg: "Message") -> "UUID":
+    async def enqueue(self, queue: str, msg: "Message") -> "UUID":
 
         await self.client.xadd(
-            name=self.get_stream_key(msg.queue),
+            name=self.get_stream_key(queue),
             fields={
                 "id": str(msg.id),
                 "message": msg.to_json(),
@@ -151,7 +152,12 @@ class AsyncredisBroker(Broker):
                 msgs,
             ):
                 msg = Message.from_json(fields.get("message"))
-                await self.enqueue(msg)
+
+                # Re-delivery is a new submission: keeping the original stamp
+                # would make the worker drop it as expired on arrival.
+                msg.enqueued_at = time.time()
+
+                await self.enqueue(queue, msg)
                 await self.ack(Entry(queue, msg_id, fields))
 
                 reclaimed += 1
@@ -160,6 +166,6 @@ class AsyncredisBroker(Broker):
 
     async def aclose(self) -> None:
 
-        if self._connpool is not None:
-            await self._connpool.disconnect()
-            self._connpool = None
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None

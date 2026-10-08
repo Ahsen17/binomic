@@ -1,3 +1,4 @@
+import time
 from collections.abc import Callable
 
 from binomic.broker import AsyncredisBroker, Entry
@@ -17,18 +18,16 @@ class TestClient:
 
         broker = make_broker(["default"])
 
-        assert broker._connpool is None
+        assert broker._client is None
 
-    def test_client_builds_pool_once(
-        self, make_broker: Callable[..., AsyncredisBroker]
-    ) -> None:
+    def test_client_is_cached(self, make_broker: Callable[..., AsyncredisBroker]) -> None:
 
         broker = make_broker(["default"])
         first = broker.client
         second = broker.client
 
-        assert first is not second
-        assert broker._connpool is not None
+        assert first is second
+        assert broker._client is not None
 
 
 class TestInitialize:
@@ -60,9 +59,9 @@ class TestEnqueue:
         self, broker: AsyncredisBroker, make_message: Callable[..., Message]
     ) -> None:
 
-        msg = make_message(queue="default")
+        msg = make_message()
 
-        assert await broker.enqueue(msg) == msg.id
+        assert await broker.enqueue("default", msg) == msg.id
 
     async def test_persists_message_fields(
         self,
@@ -70,8 +69,8 @@ class TestEnqueue:
         make_message: Callable[..., Message],
     ) -> None:
 
-        msg = make_message(queue="default", name="deploy")
-        await broker.enqueue(msg)
+        msg = make_message(name="deploy")
+        await broker.enqueue("default", msg)
         entries = await broker.acquire("consumer-1", count=10)
 
         assert len(entries) == 1
@@ -92,8 +91,8 @@ class TestAcquire:
 
         broker = make_broker(["a", "b"])
         await broker.initialize()
-        await broker.enqueue(make_message(queue="a"))
-        await broker.enqueue(make_message(queue="b"))
+        await broker.enqueue("a", make_message())
+        await broker.enqueue("b", make_message())
 
         entries = await broker.acquire("consumer-1", count=10)
 
@@ -105,7 +104,7 @@ class TestAcquire:
         make_message: Callable[..., Message],
     ) -> None:
 
-        await broker.enqueue(make_message(queue="default"))
+        await broker.enqueue("default", make_message())
 
         first = await broker.acquire("consumer-1", count=10)
         second = await broker.acquire("consumer-1", count=10)
@@ -119,7 +118,7 @@ class TestAck:
         self, broker: AsyncredisBroker, make_message: Callable[..., Message]
     ) -> None:
 
-        await broker.enqueue(make_message(queue="default"))
+        await broker.enqueue("default", make_message())
         entry = (await broker.acquire("consumer-1", count=10))[0]
 
         assert await broker.ack(entry) == 1
@@ -143,8 +142,8 @@ class TestReclaim:
         self, broker: AsyncredisBroker, make_message: Callable[..., Message]
     ) -> None:
 
-        msg = make_message(queue="default")
-        await broker.enqueue(msg)
+        msg = make_message()
+        await broker.enqueue("default", msg)
         stale = (await broker.acquire("dead-consumer", count=10))[0]
 
         reclaimed = await broker.reclaim("consumer-1", min_idle_ms=0, count=10)
@@ -158,6 +157,26 @@ class TestReclaim:
 
         assert len(redelivered) == 1
         assert redelivered[0].fields["id"] == stale.fields["id"]
+
+    async def test_restamps_enqueued_at_on_redelivery(
+        self,
+        broker: AsyncredisBroker,
+        make_message: Callable[..., Message],
+    ) -> None:
+
+        msg = make_message(enqueued_at=time.time() - 7200)
+        await broker.enqueue("default", msg)
+        await broker.acquire("dead-consumer", count=10)
+
+        await broker.reclaim("consumer-1", min_idle_ms=0, count=10)
+
+        redelivered = (await broker.acquire("consumer-1", count=10))[0]
+        restored = Message.from_json(redelivered.fields["message"])
+
+        # Re-delivery is a fresh submission: keeping the old stamp would make the
+        # worker drop the message as expired the moment it arrives.
+        assert restored.enqueued_at is not None
+        assert restored.enqueued_at > time.time() - 60
 
     async def test_skips_queues_without_group(
         self, make_broker: Callable[..., AsyncredisBroker]
@@ -173,23 +192,24 @@ class TestReclaim:
         make_message: Callable[..., Message],
     ) -> None:
 
-        await broker.enqueue(make_message(queue="default"))
+        await broker.enqueue("default", make_message())
         await broker.acquire("dead-consumer", count=10)
 
         assert await broker.reclaim("consumer-1", min_idle_ms=3_600_000, count=10) == 0
 
 
 class TestAclose:
-    async def test_releases_pool(
+    async def test_releases_client(
         self, make_broker: Callable[..., AsyncredisBroker]
     ) -> None:
 
         broker = make_broker(["default"])
-        _ = broker.client
+        first = broker.client
 
         await broker.aclose()
 
-        assert broker._connpool is None
+        assert broker._client is None
+        assert broker.client is not first
 
 
 class TestMessageToEntryRouting:
@@ -199,8 +219,8 @@ class TestMessageToEntryRouting:
         make_message: Callable[..., Message],
     ) -> None:
 
-        msg = make_message(queue="default", args=[1, 2], kwargs={"deep": True})
-        await broker.enqueue(msg)
+        msg = make_message(args=[1, 2], kwargs={"deep": True})
+        await broker.enqueue("default", msg)
         entry = (await broker.acquire("consumer-1", count=10))[0]
 
         restored = Message.from_json(entry.fields["message"])

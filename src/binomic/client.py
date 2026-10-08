@@ -1,3 +1,5 @@
+import logging
+import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Self
@@ -6,17 +8,24 @@ import anyio
 from anyio import AsyncContextManagerMixin
 
 from binomic.broker import Broker, BrokerFactory
+from binomic.message import Message
+from binomic.task import TaskScheduler, autodiscover
+from binomic.task.registry import registry
 from binomic.worker import Master, MasterPolicy, WorkerPolicy
 
 if TYPE_CHECKING:
+    from uuid import UUID
+
     from binomic.config import BinomicConfig
-    from binomic.message import Message
 
 
 __all__ = (
     "Binomic",
     "BinomicFactory",
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class Binomic(AsyncContextManagerMixin):
@@ -40,13 +49,9 @@ class Binomic(AsyncContextManagerMixin):
         self._config = config
 
         self._broker: Broker | None = None
+        self._scheduler: TaskScheduler | None = None
 
-    async def submit(self, msg: "Message") -> None:
-        """Enqueue a message to the broker stream.
-
-        The broker is created lazily on the first submit, so constructing
-        the client performs no IO.
-        """
+    async def arun(self) -> None:
 
         if self._broker is None:
             self._broker = BrokerFactory(
@@ -54,7 +59,88 @@ class Binomic(AsyncContextManagerMixin):
                 self._config.queues,
             )()
 
-        await self._broker.enqueue(msg)
+            await self._broker.initialize()
+
+        if self._scheduler is None:
+            self._scheduler = TaskScheduler()
+            self._scheduler.start()
+
+        autodiscover(self._module_name)
+
+    async def aclose(self) -> None:
+
+        if self._scheduler is not None:
+            self._scheduler.shutdown()
+            self._scheduler = None
+
+        if self._broker is not None:
+            await self._broker.aclose()
+            self._broker = None
+
+    async def _enqueue(self, queue: str, msg: "Message") -> None:
+
+        if self._broker is None:
+            raise RuntimeError("Run client `arun` before submitting messages.")
+
+        # Stamped here rather than at construction: delay waits for its deadline,
+        # and cron and interval reuse one Message across firings.
+        msg.enqueued_at = time.time()
+
+        await self._broker.enqueue(queue, msg)
+
+    async def submit(self, msg: "Message") -> "UUID":
+        """Enqueue a message to the broker stream."""
+
+        spec = registry.get(msg.name)
+
+        match spec.mode:
+            case "direct":
+                await self._enqueue(spec.queue, msg)
+
+            case "delay":
+                if self._scheduler is None:
+                    raise RuntimeError("Run client `arun` before submitting messages.")
+
+                self._scheduler.delay(
+                    func=self._enqueue,
+                    spec=spec,
+                    args=(spec.queue, msg),
+                )
+
+            case _:
+                raise ValueError(
+                    "Invalid task mode, `submit` only supports "
+                    f"direct and delay tasks. Received `{spec.mode}` task."
+                )
+
+        return msg.id
+
+    def _register_interval_cron_tasks(self) -> None:
+
+        if self._scheduler is None:
+            raise RuntimeError("Run client `arun` before registering scheduled tasks.")
+
+        scheduler = self._scheduler
+
+        for spec in registry:
+            match spec.mode:
+                case "interval":
+                    scheduler.interval(
+                        func=self._enqueue,
+                        spec=spec,
+                        args=(spec.queue, Message(name=spec.name)),
+                    )
+
+                    logger.info("Registered interval task `%s`.", spec.name)
+
+                case "cron":
+                    scheduler.cron(
+                        func=self._enqueue,
+                        spec=spec,
+                        args=(spec.queue, Message(name=spec.name)),
+                    )
+
+                    logger.info("Registered cron task `%s`.", spec.name)
 
     @asynccontextmanager
     async def __asynccontextmanager__(self) -> AsyncGenerator[Self, None]:
@@ -73,13 +159,21 @@ class Binomic(AsyncContextManagerMixin):
         )
 
         try:
+            await self.arun()
+
+            # auto register cron and interval tasks
+            self._register_interval_cron_tasks()
+
             async with anyio.create_task_group() as tg:
                 tg.start_soon(master.arun)
                 yield self
                 tg.cancel_scope.cancel()
 
         finally:
-            await master.aclose()
+            try:
+                await master.aclose()
+            finally:
+                await self.aclose()
 
 
 class BinomicFactory:

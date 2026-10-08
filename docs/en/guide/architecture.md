@@ -2,7 +2,10 @@
 
 ```{mermaid}
 flowchart LR
-    P[Producer<br>submit] --> B[AsyncredisBroker<br>Redis Streams]
+    P[Producer<br>Binomic client] -->|submit: direct| B[AsyncredisBroker<br>Redis Streams]
+    P -->|submit: delay| S[TaskScheduler]
+    P -.->|registered at startup: cron / interval| S
+    S -->|enqueued when due| B
     B -->|consumer group / PEL| W1[Worker 0<br>subprocess]
     B -->|consumer group / PEL| W2[Worker 1<br>subprocess]
     M[Master<br>supervisor] --> W1
@@ -12,8 +15,17 @@ flowchart LR
 
 ## Components
 
-- **Producer**: `Binomic.submit` creates a broker through `BrokerFactory`
-  based on the broker DSN scheme and enqueues the message.
+- **Producer**: `Binomic.submit` branches on the task's mode — a `direct` task
+  is enqueued immediately through the broker that `BrokerFactory` creates; a
+  `delay` task is handed to the scheduler for a deferred enqueue; `cron` and
+  `interval` tasks **do not go through** `submit` (calling it on them raises
+  `ValueError`) and are instead registered as periodic jobs when the client
+  starts. Which stream a message lands in comes from the task declaration
+  (`TaskSpec.queue`), not from the caller.
+- **Scheduler**: `TaskScheduler` creates the matching trigger for each of the
+  `delay` / `cron` / `interval` modes, and enqueues through the same path as
+  `direct` once a job is due. See
+  [Task modes and scheduling](scheduling.md).
 - **Broker**: `AsyncredisBroker` writes messages to Redis Streams; workers
   read them through a consumer group, and messages in the PEL of a lost
   consumer are reclaimed and redelivered by `reclaim` (`xautoclaim`).

@@ -1,10 +1,10 @@
 from collections.abc import AsyncIterator, Callable
-from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from pytest_mock import MockerFixture
 
@@ -71,158 +71,40 @@ async def running_binomic(
 
 @pytest.fixture
 def scheduler(running_binomic: Binomic) -> AsyncIOScheduler:
-    """The started scheduler of a client that ran."""
+    """The APScheduler that backs the client's task scheduler.
 
-    scheduler = running_binomic._scheduler
-    assert scheduler is not None
+    Reached through ``TaskScheduler``: it exposes no job accessor of its own.
+    """
 
-    return scheduler
+    task_scheduler = running_binomic._scheduler
+    assert task_scheduler is not None
 
-
-# Schedule registration is driven through the unbound methods, so cases carry
-# the method itself rather than an attribute name: `getattr` by string is untyped.
-Schedule = Callable[[Binomic, TaskSpec], None]
+    return task_scheduler._scheduler
 
 
 class TestBinomicScheduling:
     @pytest.mark.parametrize(
-        ("schedule", "spec_kwargs", "match"),
+        "spec_kwargs",
         [
-            pytest.param(
-                Binomic._interval,
-                {"mode": "cron", "cron": "* * * * *"},
-                "not an interval task",
-                id="interval-rejects-cron-spec",
-            ),
-            pytest.param(
-                Binomic._interval,
-                {"mode": "interval"},
-                "not an interval task",
-                id="interval-rejects-missing-value",
-            ),
-            pytest.param(
-                Binomic._cron,
-                {"mode": "interval", "interval": 10.0},
-                "not a cron task",
-                id="cron-rejects-interval-spec",
-            ),
-            pytest.param(
-                Binomic._cron,
-                {"mode": "cron"},
-                "not a cron task",
-                id="cron-rejects-missing-expression",
-            ),
+            # A yearly crontab and a ten-minute interval keep the job from firing
+            # again on its own while the test runs.
+            pytest.param({"mode": "cron", "cron": "0 0 1 1 *"}, id="cron"),
+            pytest.param({"mode": "interval", "interval": 600.0}, id="interval"),
         ],
     )
-    async def test_a_schedule_rejects_a_spec_it_does_not_own(
-        self,
-        binomic: Binomic,
-        schedule: Schedule,
-        spec_kwargs: dict[str, Any],
-        match: str,
-    ) -> None:
-
-        spec = TaskSpec(name="scheduled", queue="default", fn=lambda: None, **spec_kwargs)
-
-        with pytest.raises(ValueError, match=match):
-            schedule(binomic, spec)
-
-    @pytest.mark.parametrize(
-        ("schedule", "spec_kwargs"),
-        [
-            pytest.param(Binomic._cron, {"mode": "cron", "cron": "* * * * *"}, id="cron"),
-            pytest.param(
-                Binomic._interval, {"mode": "interval", "interval": 10.0}, id="interval"
-            ),
-        ],
-    )
-    async def test_a_schedule_requires_a_client_that_ran(
-        self,
-        binomic: Binomic,
-        schedule: Schedule,
-        spec_kwargs: dict[str, Any],
-    ) -> None:
-
-        spec = TaskSpec(name="scheduled", queue="default", fn=lambda: None, **spec_kwargs)
-
-        with pytest.raises(RuntimeError, match="Run client `arun`"):
-            schedule(binomic, spec)
-
-    async def test_cron_registers_a_crontab_job(
+    async def test_a_registered_job_enqueues_its_message(
         self,
         running_binomic: Binomic,
         scheduler: AsyncIOScheduler,
+        isolate_registry: TaskRegistry,
+        spec_kwargs: dict[str, Any],
     ) -> None:
 
-        spec = TaskSpec(
-            name="tick",
-            queue="default",
-            fn=lambda: None,
-            mode="cron",
-            cron="*/5 * * * *",
+        isolate_registry.register(
+            TaskSpec(name="scheduled", queue="default", fn=lambda: None, **spec_kwargs)
         )
 
-        running_binomic._cron(spec)
-
-        (job,) = scheduler.get_jobs()
-        assert isinstance(job.trigger, CronTrigger)
-        # Compared as objects, not by `str()`: the local-time fallback is a
-        # `ZoneInfo("UTC")` on a UTC host, which strings identically.
-        assert job.trigger.timezone == UTC
-        # `*/5 * * * *` means every 5 minutes: from 00:02 the next fire is 00:05.
-        assert job.trigger.get_next_fire_time(
-            None, datetime(2026, 1, 1, 0, 2, tzinfo=UTC)
-        ) == datetime(2026, 1, 1, 0, 5, tzinfo=UTC)
-
-    async def test_interval_registers_a_repeating_job(
-        self,
-        running_binomic: Binomic,
-        scheduler: AsyncIOScheduler,
-    ) -> None:
-
-        spec = TaskSpec(
-            name="heartbeat",
-            queue="default",
-            fn=lambda: None,
-            mode="interval",
-            interval=10.0,
-        )
-
-        running_binomic._interval(spec)
-
-        (job,) = scheduler.get_jobs()
-        assert isinstance(job.trigger, IntervalTrigger)
-        assert job.trigger.interval == timedelta(seconds=10.0)
-        assert job.trigger.timezone == UTC
-
-    @pytest.mark.parametrize(
-        ("schedule", "spec_kwargs"),
-        [
-            # A yearly crontab keeps the job from firing again on its own while
-            # the test runs; the interval is far longer than the test either.
-            pytest.param(
-                Binomic._cron,
-                {"mode": "cron", "cron": "0 0 1 1 *"},
-                id="cron",
-            ),
-            pytest.param(
-                Binomic._interval,
-                {"mode": "interval", "interval": 600.0},
-                id="interval",
-            ),
-        ],
-    )
-    async def test_a_fired_job_enqueues_its_message(
-        self,
-        running_binomic: Binomic,
-        scheduler: AsyncIOScheduler,
-        schedule: Schedule,
-        spec_kwargs: dict[str, Any],
-    ) -> None:
-
-        spec = TaskSpec(name="scheduled", queue="default", fn=lambda: None, **spec_kwargs)
-
-        schedule(running_binomic, spec)
+        running_binomic._register_interval_cron_tasks()
 
         (job,) = scheduler.get_jobs()
         await job.func(*job.args)  # what the scheduler does when the job fires
@@ -295,6 +177,22 @@ class TestBinomic:
         with pytest.raises(RuntimeError, match="Run client `arun`"):
             await binomic.submit(make_message())
 
+    async def test_submit_rejects_a_delay_task_on_a_client_that_never_ran(
+        self,
+        binomic: Binomic,
+        isolate_registry: TaskRegistry,
+        make_message: Callable[..., Message],
+    ) -> None:
+
+        isolate_registry.register(
+            TaskSpec(
+                name="later", queue="default", fn=lambda: None, mode="delay", delay=5.0
+            )
+        )
+
+        with pytest.raises(RuntimeError, match="Run client `arun`"):
+            await binomic.submit(make_message(name="later"))
+
     @pytest.mark.parametrize(
         "spec_kwargs",
         [
@@ -316,6 +214,27 @@ class TestBinomic:
 
         with pytest.raises(ValueError, match="only supports direct and delay"):
             await binomic.submit(make_message(name="scheduled"))
+
+    async def test_submit_schedules_a_delay_task(
+        self,
+        running_binomic: Binomic,
+        scheduler: AsyncIOScheduler,
+        isolate_registry: TaskRegistry,
+        make_message: Callable[..., Message],
+    ) -> None:
+
+        isolate_registry.register(
+            TaskSpec(
+                name="later", queue="default", fn=lambda: None, mode="delay", delay=30.0
+            )
+        )
+        msg = make_message(name="later")
+
+        assert await running_binomic.submit(msg) == msg.id
+
+        (job,) = scheduler.get_jobs()
+        assert isinstance(job.trigger, DateTrigger)
+        assert job.args == ("default", msg)
 
     async def test_submit_builds_broker_on_arun(
         self,

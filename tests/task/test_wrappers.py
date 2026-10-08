@@ -72,10 +72,37 @@ class TestTaskDecorator:
         self, isolate_registry: TaskRegistry
     ) -> None:
 
-        with pytest.raises(ValueError, match="Cron mode requires no arguments"):
+        with pytest.raises(ValueError, match="Cron/Interval mode requires no arguments"):
 
             @task("default", mode="cron", cron="* * * * *")
             def scheduled_twice(value: int) -> None: ...
+
+    def test_interval_mode_requires_interval(self) -> None:
+
+        declare: Callable[..., Any] = task
+
+        with pytest.raises(ValueError, match="interval must be specified"):
+            declare("default", mode="interval")
+
+    def test_interval_mode_accepts_interval(self, isolate_registry: TaskRegistry) -> None:
+
+        @task("default", mode="interval", interval=10.0)
+        def heartbeat() -> None: ...
+
+        registered = registry.get("heartbeat")
+
+        assert registered.mode == "interval"
+        assert registered.interval == 10.0
+        assert registered.queue == "default"
+
+    def test_interval_mode_rejects_parameterized_fn(
+        self, isolate_registry: TaskRegistry
+    ) -> None:
+
+        with pytest.raises(ValueError, match="Cron/Interval mode requires no arguments"):
+
+            @task("default", mode="interval", interval=10.0)
+            def heartbeat_twice(value: int) -> None: ...
 
 
 def make_package(

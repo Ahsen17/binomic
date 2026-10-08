@@ -41,34 +41,47 @@ def task[**P, T](
 ) -> Callable[[Callable[P, T]], TaskSpec[P, T]]: ...
 
 
+@overload
 def task[**P, T](
     queue: str,
     *,
-    mode: Literal["direct", "delay", "cron"] = "direct",
+    mode: Literal["interval"],
+    interval: float,
+) -> Callable[[Callable[P, T]], TaskSpec[P, T]]: ...
+
+
+def task[**P, T](
+    queue: str,
+    *,
+    mode: Literal["direct", "delay", "cron", "interval"] = "direct",
     delay: float | None = None,
     cron: str | None = None,
+    interval: float | None = None,
 ) -> Callable[[Callable[P, T]], TaskSpec[P, T]]:
     """Declare a task and register it under the function's lowercase name.
 
     Mode ``direct`` executes on submit, ``delay`` schedules execution
-    ``delay`` seconds after submit, and ``cron`` repeats execution on the
-    given cron expression.
+    ``delay`` seconds after submit, ``cron`` repeats execution on the given
+    cron expression, and ``interval`` repeats it every ``interval`` seconds.
 
     Raises:
-        ValueError: if ``delay`` or ``cron`` mode lacks its required argument.
+        ValueError: if ``delay``, ``cron`` or ``interval`` mode lacks its
+            required argument.
     """
 
     if mode == "delay" and delay is None:
         raise ValueError("delay must be specified for delay mode")
     if mode == "cron" and cron is None:
         raise ValueError("cron must be specified for cron mode")
+    if mode == "interval" and interval is None:
+        raise ValueError("interval must be specified for interval mode")
 
     def decorator(fn: Callable[P, T]) -> TaskSpec[P, T]:
 
-        if mode == "cron":
+        if mode == "cron" or mode == "interval":
             sig = inspect.signature(fn)
             if len(sig.parameters.values()) > 0:
-                raise ValueError("Cron mode requires no arguments.")
+                raise ValueError("Cron/Interval mode requires no arguments.")
 
         registry.register(
             spec := TaskSpec(
@@ -78,6 +91,7 @@ def task[**P, T](
                 mode=mode,
                 delay=delay,
                 cron=cron,
+                interval=interval,
             )
         )
         return spec

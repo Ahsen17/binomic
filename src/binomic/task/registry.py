@@ -17,9 +17,10 @@ class TaskSpec[**P, T](BaseStruct):
     queue: str
     fn: Callable[P, T]
 
-    mode: Literal["direct", "delay", "cron"] = "direct"
+    mode: Literal["direct", "delay", "cron", "interval"] = "direct"
     delay: float | None = None
     cron: str | None = None
+    interval: float | None = None
 
     async def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T:
 

@@ -6,4 +6,16 @@ from binomic.task import task
 @task(queue="default", mode="direct")
 def example(index: int = 0) -> None:
 
-    print(f"[{index}] Current time: {time.time()}")  # noqa: T201
+    print(f"[{index}][DIRECT] Current time: {time.time()}")  # noqa: T201
+
+
+@task(queue="delay", mode="delay", delay=5)
+async def delay_example(index: int = 0) -> None:
+
+    print(f"[{index}][DELAY] Current time: {time.time()}")  # noqa: T201
+
+
+@task(queue="cron", mode="cron", cron="*/1 * * * *")
+async def cron_example() -> None:
+
+    print(f"[None][CRON] Current time: {time.time()}")  # noqa: T201

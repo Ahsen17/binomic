@@ -25,7 +25,8 @@ reclaims work from dead consumers. Message payloads are serialized with
 ## Features
 
 - **Declarative tasks**: the `@task()` decorator with `direct` (immediate),
-  `delay` (deferred), and `cron` (periodic) modes
+  `delay` (deferred), `cron` (cron expression), and `interval` (fixed interval)
+  modes
 - **Redis Streams broker**: reliable delivery built on consumer groups and the
   PEL, with `xautoclaim`-based reclaim of messages from dead consumers
 - **Multiprocess workers**: the master spawns worker subprocesses via
@@ -61,24 +62,30 @@ import time
 from binomic.task import task
 
 
-@task()
+@task("default")
 def example(index: int = 0) -> None:
     print(f"[{index}] Current time: {time.time()}")
 
 
-@task(mode="delay", delay=10)  # runs after a 10-second delay
+@task("default", mode="delay", delay=10)  # runs after a 10-second delay
 def delayed() -> None: ...
 
 
-@task(mode="cron", cron="*/5 * * * *")  # runs every 5 minutes
+@task("default", mode="cron", cron="*/5 * * * *")  # runs every 5 minutes
 def periodic() -> None: ...
+
+
+@task("default", mode="interval", interval=30)  # runs every 30 seconds
+def poll() -> None: ...
 ```
+
+The first positional argument is the queue name (it must match the `queues`
+configuration), and tasks are registered under the lowercase form of the
+function name; functions in `cron` and `interval` mode take no arguments.
 
 ### 2. Start and submit
 
 ```python
-import time
-
 from binomic.client import Binomic, BinomicFactory
 from binomic.config import BinomicConfig
 from binomic.message import Message
@@ -99,10 +106,15 @@ binomic: Binomic = factory.create()
 # Entering the context starts the master (spawning worker subprocesses)
 # and exposes the submission entry point
 async with binomic:
-    await binomic.submit(
-        Message(name="example", queue="default", enqueued_at=time.time())
-    )
+    await binomic.submit(Message(name="example", args=[1]))
 ```
+
+Which stream a message lands in is decided by the queue in the task
+declaration (a message does not specify one), and `enqueued_at` is written by
+the client on delivery, so it needs no manual assignment. `submit` supports
+only the `direct` and `delay` modes: `cron` and `interval` tasks are registered
+automatically when the client starts, and calling `submit` on them raises
+`ValueError`.
 
 ### 3. Integrate with Litestar
 
@@ -130,7 +142,10 @@ parameter.
 
 ```mermaid
 flowchart LR
-    P[Producer<br>submit] --> B[AsyncredisBroker<br>Redis Streams]
+    P[Producer<br>Binomic client] -->|submit: direct| B[AsyncredisBroker<br>Redis Streams]
+    P -->|submit: delay| S[TaskScheduler]
+    P -.->|registered at startup: cron / interval| S
+    S -->|enqueued when due| B
     B -->|consumer group / PEL| W1[Worker 0<br>subprocess]
     B -->|consumer group / PEL| W2[Worker 1<br>subprocess]
     M[Master<br>supervisor] --> W1
@@ -139,7 +154,13 @@ flowchart LR
 ```
 
 - **Producer**: `Binomic.submit` creates a broker via `BrokerFactory` based on
-  the broker DSN scheme and enqueues the message.
+  the broker DSN scheme and enqueues the message; `delay` tasks are handed to
+  the scheduler for a deferred enqueue, while `cron` and `interval` tasks do
+  not go through `submit` and are registered as periodic jobs when the client
+  starts.
+- **Scheduler**: `TaskScheduler` creates the matching trigger for each of the
+  `delay` / `cron` / `interval` modes and enqueues through the same path as
+  `direct` once a job is due.
 - **Broker**: `AsyncredisBroker` writes messages to Redis Streams; workers read
   them through a consumer group, and messages stranded in a dead consumer's
   PEL are redelivered via `reclaim` (`xautoclaim`).

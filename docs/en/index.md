@@ -10,8 +10,9 @@ fleet with a master process. Message payloads are JSON-serialized with
 
 ## Features
 
-- **Declarative tasks**: the `@task()` decorator with `direct`, `delay`, and
-  `cron` modes
+- **Declarative tasks**: the `@task()` decorator with `direct` (immediate),
+  `delay` (deferred), `cron` (cron expression), and `interval` (fixed interval)
+  modes; see [Task modes and scheduling](guide/scheduling.md)
 - **Redis Streams broker**: reliable delivery based on consumer groups and the
   PEL, with `xautoclaim` reclaiming messages from lost consumers
 - **Multiprocessing workers**: the master spawns worker subprocesses and keeps
@@ -28,6 +29,7 @@ Requires Python ≥ 3.12 and Redis ≥ 7.x.
 
 guide/quickstart
 guide/architecture
+guide/scheduling
 guide/litestar
 api
 ```

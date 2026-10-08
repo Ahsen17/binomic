@@ -19,6 +19,12 @@ binomic.task
 .. automodule:: binomic.task
    :members:
 
+binomic.task.scheduler
+----------------------
+
+.. automodule:: binomic.task.scheduler
+   :members:
+
 binomic.message
 ---------------
 

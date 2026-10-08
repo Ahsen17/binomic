@@ -9,7 +9,8 @@ Master 进程负责监督与故障回收。消息体采用
 ## 特性
 
 - **声明式任务**：`@task()` 装饰器，支持 `direct`（立即）、`delay`（延迟）、
-  `cron`（周期）三种模式
+  `cron`（cron 表达式）、`interval`（固定间隔）四种模式，详见
+  [任务模式与调度](guide/scheduling.md)
 - **Redis Streams 消息代理**：基于消费者组与 PEL 的可靠投递，支持通过
   `xautoclaim` 回收失联消费者的消息
 - **多进程 Worker**：Master 以 multiprocessing 启动多个 Worker 子进程，并携
@@ -24,6 +25,7 @@ Master 进程负责监督与故障回收。消息体采用
 
 guide/quickstart
 guide/architecture
+guide/scheduling
 guide/litestar
 api
 ```

@@ -89,7 +89,18 @@ class Binomic(AsyncContextManagerMixin):
         await self._broker.enqueue(queue, msg)
 
     async def submit(self, msg: "Message") -> "UUID":
-        """Enqueue a message to the broker stream."""
+        """Dispatch a message to its task.
+
+        ``direct`` tasks are enqueued immediately and ``delay`` tasks are
+        handed to the scheduler for a deferred enqueue. Scheduled tasks
+        (``cron`` and ``interval``) cannot be submitted: they are registered
+        automatically when the client starts.
+
+        Raises:
+            TaskNotFoundError: if no task is registered under the message's name.
+            RuntimeError: if the client has not been started with ``arun``.
+            ValueError: if the task's mode is neither ``direct`` nor ``delay``.
+        """
 
         spec = registry.get(msg.name)
 

@@ -19,3 +19,9 @@ async def delay_example(index: int = 0) -> None:
 async def cron_example() -> None:
 
     print(f"[None][CRON] Current time: {time.time()}")  # noqa: T201
+
+
+@task(queue="interval", mode="interval", interval=10.0)
+async def interval_example() -> None:
+
+    print(f"[None][INTERVAL] Current time: {time.time()}")  # noqa: T201

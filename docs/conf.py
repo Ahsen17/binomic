@@ -5,8 +5,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 project = "Binomic"
-author = "ahsen17"
-release = "0.1.0"
+author = "Ahsen17"
+release = "0.1.1"
 language = "zh_CN"
 
 # Root URL of the published site, set by the Pages workflow so that

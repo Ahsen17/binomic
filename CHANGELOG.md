@@ -1,3 +1,42 @@
+## [0.1.1] - 2026-10-08
+
+### 🚀 Features
+
+- Move queue ownership to TaskSpec
+- Add delay and cron scheduling via APScheduler
+- Task samples
+- Add interval mode to task declarations
+- Register interval tasks on the client scheduler
+- Add an interval sample task
+- Add a task scheduler for delay, cron and interval modes
+
+### 🐛 Bug Fixes
+
+- Spawn worker subprocesses instead of forking
+- Correct the task timeout budget
+- Bound worker shutdown and stabilize the broker client
+- Re-stamp enqueued_at when re-delivering a reclaimed message
+
+### 🚜 Refactor
+
+- Schedule client tasks through the task scheduler
+
+### 🧪 Testing
+
+- Align the unit suite with the queue contract
+- Cover the master supervision loop
+- Isolate integration tests per pipeline
+- Cover the task scheduler
+- Scheduler pipeline integration
+
+### 📦 Build System
+
+- Point pytest at the repository root and waive APScheduler stubs
+
+### ⚙️ Miscellaneous Tasks
+
+- Upgrade to version 0.1.1
+
 ## [0.1.0] - 2026-10-06
 
 ### 🚀 Features

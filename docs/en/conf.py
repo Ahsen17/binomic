@@ -5,8 +5,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parents[2] / "src"))
 
 project = "Binomic"
-author = "ahsen17"
-release = "0.1.0"
+author = "Ahsen17"
+release = "0.1.1"
 
 # Root URL of the published site, set by the Pages workflow so that
 # cross-language links and Open Graph URLs stay absolute under the

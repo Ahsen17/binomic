@@ -23,7 +23,7 @@ Binomic 是一个自定义异步任务框架：以装饰器声明任务，以 Re
 ## 特性
 
 - **声明式任务**：`@task()` 装饰器，支持 `direct`（立即）、`delay`（延迟）、
-  `cron`（周期）三种模式
+  `cron`（cron 表达式）、`interval`（固定间隔）四种模式
 - **Redis Streams 消息代理**：基于消费者组与 PEL 的可靠投递，支持通过
   `xautoclaim` 回收失联消费者的消息
 - **多进程 Worker**：Master 以 multiprocessing 启动多个 Worker 子进程，并携
@@ -57,24 +57,29 @@ import time
 from binomic.task import task
 
 
-@task()
+@task("default")
 def example(index: int = 0) -> None:
     print(f"[{index}] Current time: {time.time()}")
 
 
-@task(mode="delay", delay=10)  # 延迟 10 秒执行
+@task("default", mode="delay", delay=10)  # 延迟 10 秒执行
 def delayed() -> None: ...
 
 
-@task(mode="cron", cron="*/5 * * * *")  # 每 5 分钟执行
+@task("default", mode="cron", cron="*/5 * * * *")  # 每 5 分钟执行
 def periodic() -> None: ...
+
+
+@task("default", mode="interval", interval=30)  # 每 30 秒执行
+def poll() -> None: ...
 ```
+
+第一个位置参数是队列名（需与 `queues` 配置对应），任务以函数名的小写形式注册；
+`cron` 与 `interval` 模式的函数不能带参数。
 
 ### 2. 启动并投递
 
 ```python
-import time
-
 from binomic.client import Binomic, BinomicFactory
 from binomic.config import BinomicConfig
 from binomic.message import Message
@@ -94,10 +99,12 @@ binomic: Binomic = factory.create()
 
 # 进入上下文后启动 Master（拉起 worker 子进程）并提供提交入口
 async with binomic:
-    await binomic.submit(
-        Message(name="example", queue="default", enqueued_at=time.time())
-    )
+    await binomic.submit(Message(name="example", args=[1]))
 ```
+
+消息进哪条 Stream 由任务声明里的队列决定（消息上不指定队列）；`enqueued_at` 由客户端
+在投递时写入，无需手工赋值。`submit` 只支持 `direct` 与 `delay` 两种模式：`cron` 与
+`interval` 任务在客户端启动时自动注册，对其调用 `submit` 会抛 `ValueError`。
 
 ### 3. Litestar 应用中集成
 
@@ -124,7 +131,10 @@ app = Litestar(
 
 ```mermaid
 flowchart LR
-    P[生产者<br>submit] --> B[AsyncredisBroker<br>Redis Streams]
+    P[生产者<br>Binomic 客户端] -->|submit：direct| B[AsyncredisBroker<br>Redis Streams]
+    P -->|submit：delay| S[TaskScheduler]
+    P -.->|启动时注册：cron / interval| S
+    S -->|到期投递| B
     B -->|consumer group / PEL| W1[Worker 0<br>子进程]
     B -->|consumer group / PEL| W2[Worker 1<br>子进程]
     M[Master<br>监督进程] --> W1
@@ -133,7 +143,10 @@ flowchart LR
 ```
 
 - **Producer**：`Binomic.submit` 经 `BrokerFactory` 按 broker DSN 协议创建代理并
-  `enqueue` 消息。
+  `enqueue` 消息；`delay` 任务交给调度器延后投递，`cron` 与 `interval` 任务不经
+  `submit`，而在客户端启动时注册为周期作业。
+- **Scheduler**：`TaskScheduler` 为 `delay` / `cron` / `interval` 三种模式创建对应的
+  触发器，到期后走与 `direct` 相同的入队路径。
 - **Broker**：`AsyncredisBroker` 将消息写入 Redis Streams，Worker 侧以消费者组
   读取；失联消费者的 PEL 消息由 `reclaim`（`xautoclaim`）回收重投。
 - **Master / Worker**：Master 以 multiprocessing 拉起 Worker 子进程并监督其存活；

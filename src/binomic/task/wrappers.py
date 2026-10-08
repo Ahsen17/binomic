@@ -66,7 +66,8 @@ def task[**P, T](
 
     Raises:
         ValueError: if ``delay``, ``cron`` or ``interval`` mode lacks its
-            required argument.
+            required argument, or if a ``cron`` or ``interval`` task's
+            function takes parameters.
     """
 
     if mode == "delay" and delay is None:

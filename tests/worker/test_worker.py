@@ -4,11 +4,13 @@ import time
 from collections.abc import AsyncIterator, Callable
 
 import anyio
+import anyio.lowlevel
 import pytest
 from pytest_mock import MockerFixture
 
-from binomic.broker import AsyncredisBroker, Entry
+from binomic.broker import AsyncredisBroker
 from binomic.message import Message
+from binomic.task import TaskScheduler
 from binomic.task.registry import TaskRegistry, TaskSpec, registry
 from binomic.worker import Worker, WorkerPolicy
 from binomic.worker.worker import logger as worker_logger
@@ -27,13 +29,26 @@ async def worker_broker(
 
 
 async def retried_message(
-    broker: AsyncredisBroker, consumer: str = "retry-reader"
+    broker: AsyncredisBroker,
+    consumer: str = "retry-reader",
+    timeout: float = 1.0,
 ) -> Message:
-    """The copy a failed run re-enqueued for another attempt."""
+    """The copy a failed run re-enqueued, once its deferred redelivery lands.
 
-    (entry,) = await broker.acquire(consumer, count=10)
+    The original is acked as soon as the retry is scheduled, so the copy only
+    shows up after the backoff has elapsed.
+    """
 
-    return Message.from_json(entry.fields["message"])
+    with anyio.fail_after(timeout):
+        while True:
+            entries = await broker.acquire(consumer, count=10)
+
+            if entries:
+                break
+
+            await anyio.sleep(0.01)
+
+    return Message.from_json(entries[0].fields["message"])
 
 
 @pytest.fixture
@@ -62,12 +77,12 @@ class TestWorkerRun:
     async def test_executes_task_and_acks(
         self,
         worker_broker: AsyncredisBroker,
-        make_worker: Callable[..., Worker],
+        make_assembled_worker: Callable[..., Worker],
         make_message: Callable[..., Message],
         tracked: list[str],
     ) -> None:
 
-        worker = make_worker()
+        worker = make_assembled_worker()
         worker._broker = worker_broker
         msg = make_message(name="record", args=["job-1"])
         await worker_broker.enqueue("default", msg)
@@ -83,13 +98,15 @@ class TestWorkerRun:
     async def test_expired_message_is_retried_without_execution(
         self,
         worker_broker: AsyncredisBroker,
-        make_worker: Callable[..., Worker],
+        make_assembled_worker: Callable[..., Worker],
         make_message: Callable[..., Message],
         tracked: list[str],
+        set_backoff: Callable[[float], None],
         caplog: pytest.LogCaptureFixture,
     ) -> None:
 
-        worker = make_worker()
+        set_backoff(0.01)
+        worker = make_assembled_worker()
         worker._broker = worker_broker
         msg = make_message(name="record", args=["late-1"])
         await worker_broker.enqueue("default", msg)
@@ -114,12 +131,12 @@ class TestWorkerRun:
     async def test_fresh_async_task_keeps_its_remaining_budget(
         self,
         worker_broker: AsyncredisBroker,
-        make_worker: Callable[..., Worker],
+        make_assembled_worker: Callable[..., Worker],
         make_message: Callable[..., Message],
         tracked: list[str],
     ) -> None:
 
-        worker = make_worker()
+        worker = make_assembled_worker()
         worker._broker = worker_broker
         msg = make_message(name="slow")
         await worker_broker.enqueue("default", msg)
@@ -132,12 +149,12 @@ class TestWorkerRun:
     async def test_unknown_task_is_logged_and_acked(
         self,
         worker_broker: AsyncredisBroker,
-        make_worker: Callable[..., Worker],
+        make_assembled_worker: Callable[..., Worker],
         make_message: Callable[..., Message],
         caplog: pytest.LogCaptureFixture,
     ) -> None:
 
-        worker = make_worker()
+        worker = make_assembled_worker()
         worker._broker = worker_broker
         await worker_broker.enqueue("default", make_message(name="ghost-task"))
         entry = (await worker_broker.acquire("test-worker", count=1))[0]
@@ -153,11 +170,11 @@ class TestWorkerRun:
     async def test_unserializable_fields_are_logged_and_acked(
         self,
         worker_broker: AsyncredisBroker,
-        make_worker: Callable[..., Worker],
+        make_assembled_worker: Callable[..., Worker],
         caplog: pytest.LogCaptureFixture,
     ) -> None:
 
-        worker = make_worker()
+        worker = make_assembled_worker()
         worker._broker = worker_broker
         # `enqueue` always writes a readable payload, so the malformed one goes
         # to the stream directly: only a real entry lands in the PEL, which is
@@ -179,15 +196,17 @@ class TestWorkerRun:
     async def test_overrun_task_times_out(
         self,
         worker_broker: AsyncredisBroker,
-        make_worker: Callable[..., Worker],
+        make_assembled_worker: Callable[..., Worker],
         make_message: Callable[..., Message],
         tracked: list[str],
+        set_backoff: Callable[[float], None],
         caplog: pytest.LogCaptureFixture,
     ) -> None:
 
+        set_backoff(0.01)
         # Wall-clock slack well above the timeout: the assertion must observe the
         # timeout branch, not the expiry branch, even on a loaded runner.
-        worker = make_worker(
+        worker = make_assembled_worker(
             policy=WorkerPolicy(
                 queues=["default"],
                 concurrency=2,
@@ -216,9 +235,10 @@ class TestWorkerRun:
     async def test_unexpected_failure_is_logged_and_retried(
         self,
         worker_broker: AsyncredisBroker,
-        make_worker: Callable[..., Worker],
+        make_assembled_worker: Callable[..., Worker],
         make_message: Callable[..., Message],
         isolate_registry: TaskRegistry,
+        set_backoff: Callable[[float], None],
         caplog: pytest.LogCaptureFixture,
     ) -> None:
 
@@ -226,8 +246,9 @@ class TestWorkerRun:
             raise ValueError("boom")
 
         isolate_registry.register(TaskSpec(name="boom", queue="default", fn=boom))
+        set_backoff(0.01)
 
-        worker = make_worker()
+        worker = make_assembled_worker()
         worker._broker = worker_broker
         await worker_broker.enqueue("default", make_message(name="boom"))
         entry = (await worker_broker.acquire("test-worker", count=1))[0]
@@ -244,10 +265,44 @@ class TestWorkerRun:
 
         assert (retried.name, retried.attempt) == ("boom", 2)
 
+    async def test_redelivery_waits_for_the_backoff(
+        self,
+        worker_broker: AsyncredisBroker,
+        make_assembled_worker: Callable[..., Worker],
+        make_message: Callable[..., Message],
+        isolate_registry: TaskRegistry,
+        set_backoff: Callable[[float], None],
+    ) -> None:
+
+        async def boom() -> None:
+            raise ValueError("boom")
+
+        isolate_registry.register(TaskSpec(name="boom", queue="default", fn=boom))
+        # Long enough that an immediate redelivery would not beat the check below.
+        set_backoff(0.2)
+
+        worker = make_assembled_worker()
+        worker._broker = worker_broker
+        await worker_broker.enqueue("default", make_message(name="boom"))
+        entry = (await worker_broker.acquire("test-worker", count=1))[0]
+
+        await worker._run(entry)
+
+        # Give an unscheduled-later redelivery every chance to land before the
+        # check: the copy arriving after the backoff is what proves the
+        # redelivery went through the scheduler rather than straight to redis.
+        await anyio.lowlevel.checkpoint()
+
+        assert await worker_broker.acquire("retry-reader", count=10) == []
+
+        retried = await retried_message(worker_broker)
+
+        assert (retried.name, retried.attempt) == ("boom", 2)
+
     async def test_gives_up_after_max_attempts(
         self,
         worker_broker: AsyncredisBroker,
-        make_worker: Callable[..., Worker],
+        make_assembled_worker: Callable[..., Worker],
         make_message: Callable[..., Message],
         isolate_registry: TaskRegistry,
         caplog: pytest.LogCaptureFixture,
@@ -258,7 +313,7 @@ class TestWorkerRun:
 
         isolate_registry.register(TaskSpec(name="boom", queue="default", fn=boom))
 
-        worker = make_worker(
+        worker = make_assembled_worker(
             policy=WorkerPolicy(
                 queues=["default"],
                 concurrency=2,
@@ -281,12 +336,12 @@ class TestWorkerRun:
     async def test_cancelled_task_is_left_pending(
         self,
         worker_broker: AsyncredisBroker,
-        make_worker: Callable[..., Worker],
+        make_assembled_worker: Callable[..., Worker],
         make_message: Callable[..., Message],
         tracked: list[str],
     ) -> None:
 
-        worker = make_worker()
+        worker = make_assembled_worker()
         worker._broker = worker_broker
         await worker_broker.enqueue("default", make_message(name="hang"))
         entry = (await worker_broker.acquire("test-worker", count=1))[0]
@@ -302,22 +357,65 @@ class TestWorkerRun:
         ] == 1
 
     async def test_run_without_broker_raises(
-        self, make_worker: Callable[..., Worker]
+        self,
+        worker_broker: AsyncredisBroker,
+        make_worker: Callable[..., Worker],
+        make_message: Callable[..., Message],
     ) -> None:
 
         worker = make_worker()
-        entry = Entry(
-            "default",
-            "1-0",
-            {
-                "id": "x",
-                "message": "{}",
-                "enqueued_at": 1234567890.0,
-            },
-        )
+        await worker_broker.enqueue("default", make_message(name="noop"))
+        entry = (await worker_broker.acquire("test-worker", count=1))[0]
 
-        with pytest.raises(RuntimeError, match="Broker is not initialized"):
+        with pytest.raises(RuntimeError, match="Worker is not initialized"):
             await worker._run(entry)
+
+        # Nothing was acked, so `reclaim` can still hand the message to a worker
+        # that is assembled properly.
+        assert (await worker_broker.client.xpending("binomic:default", "binomic"))[
+            "pending"
+        ] == 1
+
+    async def test_run_without_scheduler_raises(
+        self,
+        worker_broker: AsyncredisBroker,
+        make_worker: Callable[..., Worker],
+        make_message: Callable[..., Message],
+    ) -> None:
+
+        worker = make_worker()
+        worker._broker = worker_broker
+        await worker_broker.enqueue("default", make_message(name="noop"))
+        entry = (await worker_broker.acquire("test-worker", count=1))[0]
+
+        with pytest.raises(RuntimeError, match="Worker is not initialized"):
+            await worker._run(entry)
+
+        assert (await worker_broker.client.xpending("binomic:default", "binomic"))[
+            "pending"
+        ] == 1
+
+
+class TestWorkerBackoff:
+    @pytest.mark.parametrize(
+        ("attempt", "expected"),
+        [
+            pytest.param(1, 1.5, id="first-redelivery"),
+            pytest.param(2, 3.0, id="doubles"),
+            pytest.param(3, 6.0, id="doubles-again"),
+            pytest.param(5, 24.0, id="last-doubling"),
+            pytest.param(6, 30.0, id="reaches-the-cap"),
+            pytest.param(20, 30.0, id="stays-capped"),
+        ],
+    )
+    def test_doubles_until_the_cap(
+        self,
+        make_worker: Callable[..., Worker],
+        attempt: int,
+        expected: float,
+    ) -> None:
+
+        assert make_worker()._backoff(attempt) == expected
 
 
 class TestWorkerLifecycle:
@@ -365,6 +463,52 @@ class TestWorkerLifecycle:
         discover.assert_called_once_with("binomic")
         assert worker._terminate is not None
         assert worker._terminate.is_set()
+
+    async def test_arun_owns_a_running_scheduler(
+        self,
+        make_worker: Callable[..., Worker],
+        mocker: MockerFixture,
+    ) -> None:
+
+        mocker.patch("binomic.worker.worker.autodiscover")
+
+        broker = mocker.AsyncMock()
+        broker.acquire.return_value = []
+
+        worker = make_worker()
+        worker._broker = broker
+        worker._presence = mocker.AsyncMock()
+
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(worker.arun)
+            # Yield until the loop is inside `arun` and its scheduler is up.
+            await anyio.sleep(0.05)
+
+            scheduler = worker._scheduler
+            assert scheduler is not None
+            assert scheduler._scheduler.running is True
+
+            tasks.cancel_scope.cancel()
+
+        assert worker._scheduler is None
+
+    async def test_aclose_stops_the_scheduler(
+        self, make_worker: Callable[..., Worker]
+    ) -> None:
+        """Stopping twice must be safe: a stopped scheduler cannot shut down again."""
+
+        worker = make_worker()
+        scheduler = TaskScheduler()
+        scheduler.start()
+        worker._scheduler = scheduler
+
+        await worker.aclose()
+        await worker.aclose()
+        # `AsyncIOScheduler.shutdown` only hands the teardown to the event loop,
+        # so the scheduler is still running until the loop gets a turn.
+        await anyio.lowlevel.checkpoint()
+
+        assert scheduler._scheduler.running is False
 
     async def test_aclose_is_safe_before_arun(
         self, make_worker: Callable[..., Worker]

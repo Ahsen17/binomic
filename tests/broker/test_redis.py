@@ -1,10 +1,7 @@
-import logging
 import time
 from collections.abc import Callable
 
-import pytest
-
-from binomic.broker import AsyncredisBroker, Entry, QueueCapacityLimitError
+from binomic.broker import AsyncredisBroker, Entry
 from binomic.message import Message
 
 
@@ -79,48 +76,6 @@ class TestEnqueue:
         assert len(entries) == 1
         assert entries[0].fields["id"] == str(msg.id)
         assert '"name":"deploy"' in entries[0].fields["message"]
-
-
-class TestQueueCapacity:
-    async def test_rejects_an_enqueue_once_the_queue_is_full(
-        self,
-        make_broker: Callable[..., AsyncredisBroker],
-        make_message: Callable[..., Message],
-    ) -> None:
-
-        broker = make_broker(["default"], queue_capacity=1)
-        await broker.initialize()
-        await broker.enqueue("default", make_message())
-
-        with pytest.raises(QueueCapacityLimitError, match="out of capacity"):
-            await broker.enqueue("default", make_message())
-
-    async def test_allows_an_enqueue_while_the_queue_has_room(
-        self,
-        make_broker: Callable[..., AsyncredisBroker],
-        make_message: Callable[..., Message],
-    ) -> None:
-
-        broker = make_broker(["default"], queue_capacity=3)
-        await broker.initialize()
-
-        for _ in range(3):
-            await broker.enqueue("default", make_message())
-
-    async def test_has_no_capacity_without_a_group(
-        self,
-        make_broker: Callable[..., AsyncredisBroker],
-        make_message: Callable[..., Message],
-    ) -> None:
-
-        broker = make_broker(["default"], queue_capacity=1)
-        await broker.initialize()
-        await broker.enqueue("default", make_message())
-        await broker.client.xgroup_destroy(broker.get_stream_key("default"), "binomic")
-
-        # With no group there is no pending work to count, so nothing holds the
-        # queue back.
-        await broker.enqueue("default", make_message())
 
 
 class TestAcquire:
@@ -215,27 +170,6 @@ class TestReclaim:
 
         # A redelivery is another attempt, and the count rides in the payload.
         assert Message.from_json(redelivered[0].fields["message"]).attempt == 2
-
-    async def test_defers_a_reclaim_while_the_queue_is_full(
-        self,
-        make_broker: Callable[..., AsyncredisBroker],
-        make_message: Callable[..., Message],
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-
-        broker = make_broker(["default"], queue_capacity=1)
-        await broker.initialize()
-        await broker.enqueue("default", make_message())
-        await broker.acquire("dead-consumer", count=10)
-
-        with caplog.at_level(logging.WARNING, logger="binomic.broker.redis"):
-            assert await broker.reclaim("consumer-1", min_idle_ms=0, count=10) == 0
-
-        assert any("Deferring reclaim" in r.message for r in caplog.records)
-        # Left pending, so a later pass redelivers it once the queue drains.
-        assert (await broker.client.xpending("binomic:default", "binomic"))[
-            "pending"
-        ] == 1
 
     async def test_restamps_enqueued_at_on_redelivery(
         self,

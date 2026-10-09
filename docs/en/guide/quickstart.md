@@ -81,8 +81,8 @@ async with binomic:
   supervision coordination;
 - in `BinomicConfig`, `workers` is the number of worker subprocesses the
   master spawns, `concurrency` is the number of tasks each worker runs
-  concurrently, `queue_capacity` caps how much work each queue may hold
-  (back-pressure), and `max_attempts` is the attempt budget for a single
+  concurrently, `queue_capacity` caps how much work each queue may hold (**not
+  in effect** right now), and `max_attempts` is the attempt budget for a single
   message — see [Reliability](reliability.md) for the last two;
 - a `Message`'s `name` is the task name and `args` / `kwargs` carry the call
   arguments (the example above calls `example` with `index=1`). Which stream a

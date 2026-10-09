@@ -14,7 +14,7 @@ redeliveries. Every delivery counts as one attempt:
 
 - the client's first delivery: `attempt = 1`;
 - a worker that fails or overruns its timeout: `attempt += 1`, and the message is
-  redelivered while the budget lasts;
+  redelivered **after a backoff** while the budget lasts;
 - `reclaim` bumping a stranded message to a new consumer: `attempt += 1` too.
 
 ## Retrying a failure
@@ -23,9 +23,8 @@ When a task raises or runs longer than `task_timeout`, the worker:
 
 1. logs the failure;
 2. increments `attempt`;
-3. enqueues the message again with a **fresh** `enqueued_at` if
-   `attempt <= max_attempts` (default `3`) — the new attempt is a new entry in
-   the stream;
+3. redelivers the message **after a backoff** if `attempt <= max_attempts`
+   (default `3`) — the new attempt is a new entry in the stream;
 4. logs `max attempts reached` and drops the message once the budget is spent
    (for now it stops at the log line; see DLQ below).
 
@@ -41,9 +40,19 @@ config = BinomicConfig(queues=["default"], max_attempts=3)
 ```
 
 ```{note}
-Redelivery is immediate, with no backoff: a message that keeps failing burns
-through `max_attempts` at full speed. Wait inside the task function if you need
-one.
+Redelivery is **not** immediate: the worker defers it by a backoff that starts
+at 1.5 seconds, doubles each time (3 / 6 / 12 / 24 seconds) and caps at **30
+seconds**. The wait is held by a scheduler the worker owns, which queues the
+re-enqueue as a deferred job, and the original is **acked as soon as that job is
+scheduled**. Two consequences follow:
+
+- a worker that exits inside the backoff window loses that one redelivery — the
+  price of never delivering a message twice;
+- the deferred job is scheduled to run even when the loop reaches it late,
+  rather than being silently skipped.
+
+The backoff is fixed for now and cannot be configured; wait inside the task
+function if you need another pace.
 ```
 
 Two kinds of failure are **not** retried — they are logged and `ack`ed (the
@@ -57,18 +66,26 @@ outcome:
 the message stays in the PEL instead of being acknowledged, leaving it for the
 next `reclaim` to redeliver to another consumer.
 
-## Delivery back-pressure: the queue capacity limit
+## Delivery back-pressure: the queue capacity limit (not in effect)
 
-`queue_capacity` (default `1000`) caps how much work a queue may hold. The limit
-is read from the consumer group's own bookkeeping — `pending` (delivered but
-unacknowledged) plus `lag` (not yet delivered) — and `enqueue` raises
-`QueueCapacityLimitError` once it is reached:
+```{warning}
+This check is **switched off for now**: `AsyncredisBroker._outofcapacity` carries
+a `return False` marked `# TODO: there is a bug`, so `enqueue` never raises
+`QueueCapacityLimitError` and `queue_capacity` is currently a knob with no
+effect. This section describes what happens **once it is enabled**; why it was
+switched off is at the end.
+```
+
+`queue_capacity` (default `1000`) is **meant** to cap how much work a queue may
+hold. The limit is read from the consumer group's own bookkeeping — `pending`
+(delivered but unacknowledged) plus `lag` (not yet delivered) — and `enqueue`
+raises `QueueCapacityLimitError` once it is reached:
 
 ```python
 from binomic.broker import QueueCapacityLimitError
 ```
 
-What happens on a full queue depends on the caller:
+Once enabled, what happens on a full queue depends on the caller:
 
 | Caller | When the queue is full |
 |-|-|
@@ -83,6 +100,13 @@ it for a later pass. The check reads the consumer group's bookkeeping, so the
 queue must have its consumer group created (that is, the broker initialized);
 with no group, there is no capacity limit.
 ```
+
+**Why it was switched off**: the check reads the consumer group's bookkeeping,
+and `xinfo_groups` raises `no such key` while the stream key does not exist yet.
+`initialize()` only creates keys for the queues in the broker's configuration,
+so an `enqueue` aimed at a queue that is **not in that configuration** (a queue
+some task declares but `queues` never listed, say) took `enqueue` down with it.
+The check was short-circuited until that is fixed.
 
 ## Dead letter queue (not implemented)
 

@@ -26,6 +26,16 @@ async def worker_broker(
     await instance.aclose()
 
 
+async def retried_message(
+    broker: AsyncredisBroker, consumer: str = "retry-reader"
+) -> Message:
+    """The copy a failed run re-enqueued for another attempt."""
+
+    (entry,) = await broker.acquire(consumer, count=10)
+
+    return Message.from_json(entry.fields["message"])
+
+
 @pytest.fixture
 def tracked(isolate_registry: TaskRegistry) -> list[str]:
     """Register tasks recording their invocations, plus a never-returning one."""
@@ -70,7 +80,7 @@ class TestWorkerRun:
             "pending"
         ] == 0
 
-    async def test_expired_message_is_dropped_without_execution(
+    async def test_expired_message_is_retried_without_execution(
         self,
         worker_broker: AsyncredisBroker,
         make_worker: Callable[..., Worker],
@@ -81,13 +91,12 @@ class TestWorkerRun:
 
         worker = make_worker()
         worker._broker = worker_broker
-        msg = make_message(
-            name="record",
-            args=["late-1"],
-            enqueued_at=time.time() - 7200,
-        )
+        msg = make_message(name="record", args=["late-1"])
         await worker_broker.enqueue("default", msg)
         entry = (await worker_broker.acquire("test-worker", count=1))[0]
+
+        # The stamp rides on the entry now, so age the entry itself.
+        entry.fields["enqueued_at"] = time.time() - 7200
 
         with caplog.at_level(logging.WARNING, logger=worker_logger.name):
             await worker._run(entry)
@@ -98,27 +107,9 @@ class TestWorkerRun:
             "pending"
         ] == 0
 
-    async def test_unstamped_message_is_not_expired(
-        self,
-        worker_broker: AsyncredisBroker,
-        make_worker: Callable[..., Worker],
-        tracked: list[str],
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
+        retried = await retried_message(worker_broker)
 
-        worker = make_worker()
-        worker._broker = worker_broker
-
-        # A message built without `enqueued_at` has an unknown age, not zero age.
-        msg = Message(name="record", args=["fresh"])
-        await worker_broker.enqueue("default", msg)
-        entry = (await worker_broker.acquire("test-worker", count=1))[0]
-
-        with caplog.at_level(logging.WARNING, logger=worker_logger.name):
-            await worker._run(entry)
-
-        assert tracked == ["fresh"]
-        assert not any("has expired" in r.message for r in caplog.records)
+        assert (retried.name, retried.args, retried.attempt) == ("record", ["late-1"], 2)
 
     async def test_fresh_async_task_keeps_its_remaining_budget(
         self,
@@ -168,12 +159,19 @@ class TestWorkerRun:
 
         worker = make_worker()
         worker._broker = worker_broker
-        entry = Entry("default", "1-0", {"id": "bad", "message": "{not-json"})
+        # `enqueue` always writes a readable payload, so the malformed one goes
+        # to the stream directly: only a real entry lands in the PEL, which is
+        # what makes the ack observable.
+        await worker_broker.client.xadd(
+            worker_broker.get_stream_key("default"),
+            {"id": "bad-1", "message": "{not-json", "enqueued_at": time.time()},
+        )
+        entry = (await worker_broker.acquire("test-worker", count=1))[0]
 
         with caplog.at_level(logging.ERROR, logger=worker_logger.name):
             await worker._run(entry)
 
-        assert any("Failed to process" in r.message for r in caplog.records)
+        assert any("Failed to deserialize" in r.message for r in caplog.records)
         assert (await worker_broker.client.xpending("binomic:default", "binomic"))[
             "pending"
         ] == 0
@@ -201,20 +199,122 @@ class TestWorkerRun:
         await worker_broker.enqueue("default", msg)
         entry = (await worker_broker.acquire("test-worker", count=1))[0]
 
-        with caplog.at_level(logging.WARNING, logger=worker_logger.name):
+        with caplog.at_level(logging.ERROR, logger=worker_logger.name):
             await worker._run(entry)
 
-        assert any("timed out" in r.message for r in caplog.records)
+        # A timeout is an invocation failure like any other: logged, then handed
+        # back for another attempt.
+        assert any("Failed to process" in r.message for r in caplog.records)
         assert (await worker_broker.client.xpending("binomic:default", "binomic"))[
             "pending"
         ] == 0
+
+        retried = await retried_message(worker_broker)
+
+        assert (retried.name, retried.attempt) == ("hang", 2)
+
+    async def test_unexpected_failure_is_logged_and_retried(
+        self,
+        worker_broker: AsyncredisBroker,
+        make_worker: Callable[..., Worker],
+        make_message: Callable[..., Message],
+        isolate_registry: TaskRegistry,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+
+        async def boom() -> None:
+            raise ValueError("boom")
+
+        isolate_registry.register(TaskSpec(name="boom", queue="default", fn=boom))
+
+        worker = make_worker()
+        worker._broker = worker_broker
+        await worker_broker.enqueue("default", make_message(name="boom"))
+        entry = (await worker_broker.acquire("test-worker", count=1))[0]
+
+        with caplog.at_level(logging.ERROR, logger=worker_logger.name):
+            await worker._run(entry)
+
+        assert any("Failed to process" in r.message for r in caplog.records)
+        assert (await worker_broker.client.xpending("binomic:default", "binomic"))[
+            "pending"
+        ] == 0
+
+        retried = await retried_message(worker_broker)
+
+        assert (retried.name, retried.attempt) == ("boom", 2)
+
+    async def test_gives_up_after_max_attempts(
+        self,
+        worker_broker: AsyncredisBroker,
+        make_worker: Callable[..., Worker],
+        make_message: Callable[..., Message],
+        isolate_registry: TaskRegistry,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+
+        async def boom() -> None:
+            raise ValueError("boom")
+
+        isolate_registry.register(TaskSpec(name="boom", queue="default", fn=boom))
+
+        worker = make_worker(
+            policy=WorkerPolicy(
+                queues=["default"],
+                concurrency=2,
+                max_attempts=3,
+            )
+        )
+        worker._broker = worker_broker
+        await worker_broker.enqueue("default", make_message(name="boom", attempt=3))
+        entry = (await worker_broker.acquire("test-worker", count=1))[0]
+
+        with caplog.at_level(logging.WARNING, logger=worker_logger.name):
+            await worker._run(entry)
+
+        assert any("max attempts reached" in r.message for r in caplog.records)
+        assert await worker_broker.acquire("retry-reader", count=10) == []
+        assert (await worker_broker.client.xpending("binomic:default", "binomic"))[
+            "pending"
+        ] == 0
+
+    async def test_cancelled_task_is_left_pending(
+        self,
+        worker_broker: AsyncredisBroker,
+        make_worker: Callable[..., Worker],
+        make_message: Callable[..., Message],
+        tracked: list[str],
+    ) -> None:
+
+        worker = make_worker()
+        worker._broker = worker_broker
+        await worker_broker.enqueue("default", make_message(name="hang"))
+        entry = (await worker_broker.acquire("test-worker", count=1))[0]
+
+        with anyio.CancelScope() as scope:
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(worker._run, entry)
+                await anyio.sleep(0.01)
+                scope.cancel()
+
+        assert (await worker_broker.client.xpending("binomic:default", "binomic"))[
+            "pending"
+        ] == 1
 
     async def test_run_without_broker_raises(
         self, make_worker: Callable[..., Worker]
     ) -> None:
 
         worker = make_worker()
-        entry = Entry("default", "1-0", {"id": "x", "message": "{}"})
+        entry = Entry(
+            "default",
+            "1-0",
+            {
+                "id": "x",
+                "message": "{}",
+                "enqueued_at": 1234567890.0,
+            },
+        )
 
         with pytest.raises(RuntimeError, match="Broker is not initialized"):
             await worker._run(entry)
@@ -289,3 +389,16 @@ class TestWorkerLifecycle:
         await worker.aclose()
 
         assert timers.cancel_scope.cancel.call_count == 1
+
+    async def test_aclose_closes_presence(
+        self, make_worker: Callable[..., Worker], mocker: MockerFixture
+    ) -> None:
+
+        worker = make_worker()
+        presence = mocker.AsyncMock()
+        worker._presence = presence
+
+        await worker.aclose()
+
+        presence.aclose.assert_awaited_once()
+        assert worker._presence is None

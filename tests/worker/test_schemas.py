@@ -15,6 +15,7 @@ class TestWorkerPolicy:
         policy = WorkerPolicy(queues=["a"], concurrency=1)
 
         assert policy.task_timeout == 600.0
+        assert policy.max_attempts == 3
         assert policy.read_count == 10
         assert policy.poll_interval == 0.1
         assert policy.heartbeat_interval == 5.0

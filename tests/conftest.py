@@ -1,6 +1,5 @@
 """Global test fixtures shared by every test subtree."""
 
-import time
 from collections.abc import AsyncIterator, Callable, Iterator
 from typing import Any
 
@@ -40,23 +39,19 @@ def isolate_registry() -> Iterator[TaskRegistry]:
 
 @pytest.fixture
 def make_message() -> Callable[..., Message]:
-    """Build Message with per-test overrides visible in the test body.
-
-    ``enqueued_at`` defaults to the current time; build a ``Message`` directly
-    when a test needs an explicitly unstamped one.
-    """
+    """Build Message with per-test overrides visible in the test body."""
 
     def _make(
         *,
         name: str = "noop",
-        enqueued_at: float | None = None,
+        attempt: int = 1,
         args: list[Any] | None = None,
         kwargs: dict[str, Any] | None = None,
     ) -> Message:
 
         return Message(
             name=name,
-            enqueued_at=time.time() if enqueued_at is None else enqueued_at,
+            attempt=attempt,
             args=args if args is not None else [],
             kwargs=kwargs if kwargs is not None else {},
         )

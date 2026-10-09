@@ -26,17 +26,17 @@ class TestMessageDefaults:
         assert msg.args == []
         assert msg.kwargs == {}
 
-    def test_enqueued_at_defaults_to_none(self) -> None:
+    def test_attempt_defaults_to_one(self) -> None:
 
         msg = Message(name="noop")
 
-        assert msg.enqueued_at is None
+        assert msg.attempt == 1
 
 
 class TestMessageSerialization:
     def test_to_json_sorts_keys(self) -> None:
 
-        msg = Message(name="noop", enqueued_at=1.0, id=UUID(int=0))
+        msg = Message(name="noop", id=UUID(int=0))
 
         assert msg.to_json().startswith('{"args":')
 
@@ -45,7 +45,7 @@ class TestMessageSerialization:
         make_message: Callable[..., Message],
     ) -> None:
 
-        msg = make_message(args=[1, "two"], kwargs={"key": 3})
+        msg = make_message(attempt=2, args=[1, "two"], kwargs={"key": 3})
 
         restored = Message.from_json(msg.to_json())
 
@@ -56,20 +56,10 @@ class TestMessageSerialization:
         make_message: Callable[..., Message],
     ) -> None:
 
-        raw = make_message(name="deploy", enqueued_at=1.0).to_json()
+        raw = make_message(name="deploy").to_json()
 
+        assert '"id":"' in raw
         assert '"name":"deploy"' in raw
-        assert '"enqueued_at":1.0' in raw
-
-    def test_from_json_accepts_full_payload(
-        self,
-        make_message: Callable[..., Message],
-    ) -> None:
-
-        msg = make_message()
-
-        restored = Message.from_json(msg.to_json())
-
-        assert restored.id == msg.id
-        assert restored.name == msg.name
-        assert restored.enqueued_at == msg.enqueued_at
+        assert '"attempt":1' in raw
+        assert '"args":[]' in raw
+        assert '"kwargs":{}' in raw

@@ -1,3 +1,4 @@
+import logging
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
@@ -8,7 +9,7 @@ from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from pytest_mock import MockerFixture
 
-from binomic.broker import AsyncredisBroker
+from binomic.broker import AsyncredisBroker, QueueCapacityLimitError
 from binomic.client import Binomic, BinomicFactory
 from binomic.config import BinomicConfig
 from binomic.message import Message
@@ -116,7 +117,6 @@ class TestBinomicScheduling:
 
         assert entry.queue == "default"
         assert msg.name == "scheduled"
-        assert msg.enqueued_at is not None
 
     async def test_a_context_registers_scheduled_tasks_only(
         self,
@@ -167,6 +167,45 @@ class TestBinomicScheduling:
 
 
 class TestBinomic:
+    async def test_arun_closes_a_broker_when_initialization_fails(
+        self,
+        binomic: Binomic,
+        mocker: MockerFixture,
+    ) -> None:
+
+        broker = mocker.AsyncMock()
+        broker.initialize.side_effect = RuntimeError("broker boom")
+        mocker.patch(
+            "binomic.client.BrokerFactory"
+        ).return_value.create.return_value = broker
+
+        with pytest.raises(RuntimeError, match="broker boom"):
+            await binomic.arun()
+
+        broker.aclose.assert_awaited_once()
+        assert binomic._broker is None
+        assert binomic._scheduler is None
+
+    async def test_arun_rolls_back_a_broker_when_scheduler_start_fails(
+        self,
+        binomic: Binomic,
+        mocker: MockerFixture,
+    ) -> None:
+
+        broker = mocker.AsyncMock()
+        mocker.patch(
+            "binomic.client.BrokerFactory"
+        ).return_value.create.return_value = broker
+        scheduler = mocker.patch("binomic.client.TaskScheduler")
+        scheduler.return_value.start.side_effect = RuntimeError("scheduler boom")
+
+        with pytest.raises(RuntimeError, match="scheduler boom"):
+            await binomic.arun()
+
+        broker.aclose.assert_awaited_once()
+        assert binomic._broker is None
+        assert binomic._scheduler is None
+
     async def test_submit_rejects_a_client_that_never_ran(
         self,
         binomic: Binomic,
@@ -246,13 +285,13 @@ class TestBinomic:
 
         broker = mocker.AsyncMock()
         factory = mocker.patch("binomic.client.BrokerFactory")
-        factory.return_value.return_value = broker
+        factory.return_value.create.return_value = broker
         await binomic.arun()
         msg = make_message()
 
         assert await binomic.submit(msg) == msg.id
 
-        factory.assert_called_once_with("redis://localhost:6379/0", ["default"])
+        factory.assert_called_once_with("redis://localhost:6379/0", ["default"], 1000)
         broker.enqueue.assert_awaited_once_with("default", msg)
 
     async def test_submit_reuses_broker_instance(
@@ -265,7 +304,7 @@ class TestBinomic:
 
         broker = mocker.AsyncMock()
         factory = mocker.patch("binomic.client.BrokerFactory")
-        factory.return_value.return_value = broker
+        factory.return_value.create.return_value = broker
         await binomic.arun()
 
         await binomic.submit(make_message())
@@ -273,6 +312,28 @@ class TestBinomic:
 
         factory.assert_called_once()
         assert broker.enqueue.await_count == 2
+
+    async def test_submit_drops_a_message_when_the_queue_is_full(
+        self,
+        binomic: Binomic,
+        noop_task: TaskSpec,
+        mocker: MockerFixture,
+        make_message: Callable[..., Message],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+
+        broker = mocker.AsyncMock()
+        broker.enqueue.side_effect = QueueCapacityLimitError("full")
+        mocker.patch(
+            "binomic.client.BrokerFactory"
+        ).return_value.create.return_value = broker
+        await binomic.arun()
+        msg = make_message()
+
+        with caplog.at_level(logging.ERROR, logger="binomic.client"):
+            assert await binomic.submit(msg) == msg.id
+
+        assert any("capacity limit exceeded" in r.message for r in caplog.records)
 
 
 class TestBinomicClose:
@@ -283,7 +344,7 @@ class TestBinomicClose:
     ) -> None:
 
         factory = mocker.patch("binomic.client.BrokerFactory")
-        factory.return_value.return_value = mocker.AsyncMock()
+        factory.return_value.create.return_value = mocker.AsyncMock()
         master = mocker.Mock()
         master.arun = mocker.AsyncMock()
         master.aclose = mocker.AsyncMock(side_effect=RuntimeError("master boom"))

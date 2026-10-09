@@ -11,6 +11,7 @@ from binomic.broker import BrokerFactory, Entry
 from binomic.message import Message
 from binomic.task import TaskNotFoundError, autodiscover
 from binomic.task.registry import registry
+from binomic.task.scheduler import TaskScheduler
 
 from .presence import SubprocessPresence
 
@@ -61,6 +62,7 @@ class Worker(SpawnProcess):
         # A spawned child only receives picklable data, so the AnyIO primitives
         # are created in `arun` instead of here.
         self._semaphore: anyio.Semaphore | None = None
+        self._scheduler: TaskScheduler | None = None
         self._terminate: anyio.Event | None = None
 
     async def arun(self) -> None:
@@ -72,6 +74,10 @@ class Worker(SpawnProcess):
             ).create()
 
             await self._broker.initialize()
+
+        if self._scheduler is None:
+            self._scheduler = TaskScheduler()
+            self._scheduler.start()
 
         # Task discovery happens in the process that executes the tasks.
         autodiscover(self._module_name)
@@ -129,12 +135,19 @@ class Worker(SpawnProcess):
 
             await anyio.sleep(self._policy.heartbeat_interval)
 
+    def _backoff(self, attempt: int) -> float:
+
+        return min(1.5 * (2 ** (attempt - 1)), 30.0)
+
     async def _run(self, entry: "Entry") -> None:
 
         queue, _, fields = entry
 
-        if self._broker is None:
-            raise RuntimeError("Broker is not initialized.")
+        # Both are assembled by `arun`. Without the scheduler a redelivery would
+        # be dropped silently -- the entry is acked as soon as the retry is
+        # scheduled -- so failing loudly beats losing the message.
+        if self._broker is None or self._scheduler is None:
+            raise RuntimeError("Worker is not initialized.")
 
         cancelled = False
 
@@ -169,6 +182,7 @@ class Worker(SpawnProcess):
                     )
 
             # The invocation did not succeed: retry it until the budget is spent.
+            backoff = self._backoff(msg.attempt)
             msg.attempt += 1
             if msg.attempt > self._policy.max_attempts:
                 logger.warning(
@@ -179,7 +193,12 @@ class Worker(SpawnProcess):
                 # TODO: send to DLQ
                 return
 
-            await self._broker.enqueue(queue, msg)
+            self._scheduler.delay(
+                func=self._broker.enqueue,
+                spec=registry.get(msg.name),
+                delay=backoff,
+                args=(queue, msg),
+            )
 
         except TaskNotFoundError as err:
             logger.error(
@@ -230,6 +249,10 @@ class Worker(SpawnProcess):
         if self._presence is not None:
             await self._presence.aclose()
             self._presence = None
+
+        if self._scheduler is not None:
+            self._scheduler.shutdown()
+            self._scheduler = None
 
     def run(self) -> None:
 

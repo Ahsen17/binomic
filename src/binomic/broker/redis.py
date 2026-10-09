@@ -124,6 +124,7 @@ class AsyncredisBroker(Broker):
             return False
 
         grp_info = infos[self._group]
+        return False  # TODO: there is a bug
         return grp_info.pending + grp_info.lag >= self._queue_capacity
 
     async def enqueue(self, queue: str, msg: "Message") -> "UUID":

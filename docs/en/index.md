@@ -15,6 +15,9 @@ fleet with a master process. Message payloads are JSON-serialized with
   modes; see [Task modes and scheduling](guide/scheduling.md)
 - **Redis Streams broker**: reliable delivery based on consumer groups and the
   PEL, with `xautoclaim` reclaiming messages from lost consumers
+- **Retries and back-pressure**: failed or overdue messages are redelivered up
+  to `max_attempts` (3 by default) and each queue is capped by
+  `queue_capacity`; see [Reliability](guide/reliability.md)
 - **Multiprocessing workers**: the master spawns worker subprocesses and keeps
   supervising them with presence heartbeats
 - **Type safe**: fully checked with mypy strict and ruff; the task registry is
@@ -30,6 +33,7 @@ Requires Python ≥ 3.12 and Redis ≥ 7.x.
 guide/quickstart
 guide/architecture
 guide/scheduling
+guide/reliability
 guide/litestar
 api
 ```

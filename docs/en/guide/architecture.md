@@ -8,6 +8,7 @@ flowchart LR
     S -->|enqueued when due| B
     B -->|consumer group / PEL| W1[Worker 0<br>subprocess]
     B -->|consumer group / PEL| W2[Worker 1<br>subprocess]
+    W1 -.->|failure or timeout:<br>redeliver, attempt + 1| B
     M[Master<br>supervisor] --> W1
     M --> W2
     M -->|presence heartbeat| R[(Redis)]
@@ -28,8 +29,12 @@ flowchart LR
   [Task modes and scheduling](scheduling.md).
 - **Broker**: `AsyncredisBroker` writes messages to Redis Streams; workers
   read them through a consumer group, and messages in the PEL of a lost
-  consumer are reclaimed and redelivered by `reclaim` (`xautoclaim`).
+  consumer are reclaimed and redelivered by `reclaim` (`xautoclaim`), which
+  bumps `attempt`. Each queue is capped by `queue_capacity`, and `enqueue`
+  raises `QueueCapacityLimitError` once it is reached.
 - **Master / Worker**: the master spawns worker subprocesses through
   multiprocessing and supervises their liveness; each worker executes tasks
-  concurrently with `anyio` inside its process and acknowledges results
-  with `ack`.
+  concurrently with `anyio` inside its process. A task that succeeds is
+  `ack`ed; one that fails or overruns is redelivered while `max_attempts`
+  lasts and dropped after that; a cancelled task is **not** `ack`ed, leaving
+  its message to `reclaim`. See [Reliability](reliability.md).

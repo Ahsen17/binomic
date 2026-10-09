@@ -82,6 +82,11 @@ automatically by the client at startup (see the next section). Which stream a
 message lands in is decided by the **queue in the task declaration**; `submit`
 does not take a caller-specified queue.
 
+A full queue (one at `queue_capacity`) is different: `submit` raises **nothing**.
+The `QueueCapacityLimitError` is swallowed inside the client and logged, the
+message is dropped without a retry, and `submit` still returns the message ID.
+See [Reliability](reliability.md).
+
 ```python
 from binomic.message import Message
 

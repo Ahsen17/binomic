@@ -80,12 +80,15 @@ async with binomic:
 - `redis_dsn` points at the Redis used for presence heartbeats and
   supervision coordination;
 - in `BinomicConfig`, `workers` is the number of worker subprocesses the
-  master spawns and `concurrency` is the number of tasks each worker runs
-  concurrently;
+  master spawns, `concurrency` is the number of tasks each worker runs
+  concurrently, `queue_capacity` caps how much work each queue may hold
+  (back-pressure), and `max_attempts` is the attempt budget for a single
+  message — see [Reliability](reliability.md) for the last two;
 - a `Message`'s `name` is the task name and `args` / `kwargs` carry the call
   arguments (the example above calls `example` with `index=1`). Which stream a
   message lands in is decided by the **queue in the task declaration** — a
   message neither needs nor can specify a queue;
-- `enqueued_at` needs no manual assignment: the client writes it at the moment
-  of **actual delivery**, which is also why delay and periodic tasks see the
+- `enqueued_at` needs no manual assignment: the client writes it -- onto the
+  message's stream entry, not the `Message` itself -- at the moment of
+  **actual delivery**, which is also why delay and periodic tasks see the
   current time on every delivery.

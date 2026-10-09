@@ -13,6 +13,8 @@ Master 进程负责监督与故障回收。消息体采用
   [任务模式与调度](guide/scheduling.md)
 - **Redis Streams 消息代理**：基于消费者组与 PEL 的可靠投递，支持通过
   `xautoclaim` 回收失联消费者的消息
+- **失败重试与背压**：失败或超时的消息按 `max_attempts`（默认 3）重投，队列容量由
+  `queue_capacity` 限制，详见[可靠性](guide/reliability.md)
 - **多进程 Worker**：Master 以 multiprocessing 启动多个 Worker 子进程，并携
   presence 心跳持续监督
 - **类型安全**：全量 mypy strict 与 ruff 检查，任务注册表基于泛型 `TaskSpec[P, T]`
@@ -26,6 +28,7 @@ Master 进程负责监督与故障回收。消息体采用
 guide/quickstart
 guide/architecture
 guide/scheduling
+guide/reliability
 guide/litestar
 api
 ```

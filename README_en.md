@@ -29,6 +29,9 @@ reclaims work from dead consumers. Message payloads are serialized with
   modes
 - **Redis Streams broker**: reliable delivery built on consumer groups and the
   PEL, with `xautoclaim`-based reclaim of messages from dead consumers
+- **Retries and back-pressure**: failed or overdue messages are redelivered up
+  to `max_attempts` (3 by default), and each queue is capped by
+  `queue_capacity`, which raises `QueueCapacityLimitError` on overflow
 - **Multiprocess workers**: the master spawns worker subprocesses via
   multiprocessing and supervises them with a presence heartbeat
 - **Type safe**: fully mypy strict and ruff checked, with a generic
@@ -111,7 +114,8 @@ async with binomic:
 
 Which stream a message lands in is decided by the queue in the task
 declaration (a message does not specify one), and `enqueued_at` is written by
-the client on delivery, so it needs no manual assignment. `submit` supports
+the client on delivery into the message's stream entry (not onto the `Message`),
+so it needs no manual assignment. `submit` supports
 only the `direct` and `delay` modes: `cron` and `interval` tasks are registered
 automatically when the client starts, and calling `submit` on them raises
 `ValueError`.
@@ -148,6 +152,7 @@ flowchart LR
     S -->|enqueued when due| B
     B -->|consumer group / PEL| W1[Worker 0<br>subprocess]
     B -->|consumer group / PEL| W2[Worker 1<br>subprocess]
+    W1 -.->|failure or timeout:<br>redeliver, attempt + 1| B
     M[Master<br>supervisor] --> W1
     M --> W2
     M -->|presence heartbeat| R[(Redis)]
@@ -163,11 +168,15 @@ flowchart LR
   `direct` once a job is due.
 - **Broker**: `AsyncredisBroker` writes messages to Redis Streams; workers read
   them through a consumer group, and messages stranded in a dead consumer's
-  PEL are redelivered via `reclaim` (`xautoclaim`).
+  PEL are redelivered via `reclaim` (`xautoclaim`), which bumps `attempt`. Each
+  queue is capped by `queue_capacity`, and `enqueue` raises
+  `QueueCapacityLimitError` once it is reached.
 - **Master / Worker**: the master spawns worker subprocesses through
   multiprocessing and supervises their liveness; each worker executes tasks
-  concurrently within its process via `anyio` and confirms completion with
-  `ack`.
+  concurrently within its process via `anyio`. A task that succeeds is `ack`ed;
+  one that fails or overruns is redelivered while `max_attempts` lasts and
+  dropped after that; a cancelled task is **not** `ack`ed, leaving its message
+  to `reclaim`.
 
 ## Development
 

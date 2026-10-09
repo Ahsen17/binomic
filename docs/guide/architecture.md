@@ -8,6 +8,7 @@ flowchart LR
     S -->|到期投递| B
     B -->|consumer group / PEL| W1[Worker 0<br>子进程]
     B -->|consumer group / PEL| W2[Worker 1<br>子进程]
+    W1 -.->|失败或超时：重投<br>attempt + 1| B
     M[Master<br>监督进程] --> W1
     M --> W2
     M -->|presence 心跳| R[(Redis)]
@@ -23,6 +24,9 @@ flowchart LR
 - **Scheduler**：`TaskScheduler` 为 `delay` / `cron` / `interval` 三种模式创建对应的
   触发器，到期后走与 `direct` 相同的入队路径。详见[任务模式与调度](scheduling.md)。
 - **Broker**：`AsyncredisBroker` 将消息写入 Redis Streams，Worker 侧以消费者组
-  读取；失联消费者的 PEL 消息由 `reclaim`（`xautoclaim`）回收重投。
+  读取；失联消费者的 PEL 消息由 `reclaim`（`xautoclaim`）回收重投，重投时 `attempt + 1`。
+  队列容量由 `queue_capacity` 限制，超限时 `enqueue` 抛 `QueueCapacityLimitError`。
 - **Master / Worker**：Master 以 multiprocessing 拉起 Worker 子进程并监督其存活；
-  Worker 在进程内通过 `anyio` 以配置并发执行任务，执行结果经 `ack` 确认。
+  Worker 在进程内通过 `anyio` 以配置并发执行任务。任务成功后 `ack`；失败或超时则在
+  `max_attempts` 之内重投，超出后记日志丢弃；任务被取消时**不 ack**，消息留给
+  `reclaim`。详见[可靠性](reliability.md)。

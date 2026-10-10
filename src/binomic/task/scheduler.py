@@ -49,7 +49,7 @@ class TaskScheduler:
         if delay is None and (spec.mode != "delay" or spec.delay is None):
             raise ValueError("Task is not a delay task or lack `delay` value.")
 
-        if (delay := delay or spec.delay) <= 0:
+        if (delay := delay or spec.delay) is None or delay <= 0:
             raise ValueError("Delay value must be greater than 0.")
 
         self._scheduler.add_job(

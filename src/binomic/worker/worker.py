@@ -1,9 +1,9 @@
-import logging
 import time
 from multiprocessing.context import SpawnProcess
 from typing import TYPE_CHECKING
 
 import anyio
+import structlog
 
 from binomic.base import DeserializationError
 from binomic.broker import BrokerFactory, Entry
@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 __all__ = ("Worker",)
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.stdlib.get_logger(__name__)
 
 
 class Worker(SpawnProcess):

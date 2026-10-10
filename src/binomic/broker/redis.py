@@ -1,8 +1,8 @@
-import logging
 import time
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Final, cast
 
+import structlog
 from redis.asyncio import BlockingConnectionPool
 from redis.asyncio import Redis as AsyncRedis
 from redis.exceptions import ResponseError
@@ -26,7 +26,7 @@ __all__ = ("AsyncredisBroker",)
 GROUP_NAMESPACE: Final[str] = APP_NAME
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.stdlib.get_logger(__name__)
 
 
 class AsyncredisBroker(Broker):

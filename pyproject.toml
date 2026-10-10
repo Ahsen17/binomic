@@ -10,11 +10,12 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
-    "anyio>=4.15.1",
-    "apscheduler>=3.11.3",
-    "msgspec>=0.22.0",
-    "redis[hiredis]>=8.1.0",
-    "uuid-utils>=1.0.0",
+    "anyio",
+    "apscheduler",
+    "msgspec",
+    "redis[hiredis]",
+    "structlog",
+    "uuid-utils",
 ]
 
 [project.urls]
@@ -58,10 +59,6 @@ test = [
   "pytest-mock",
   "pytest-xdist",
 ]
-
-[[tool.uv.index]]
-name = "tencent"
-url = "https://mirrors.cloud.tencent.com/pypi/simple/"
 
 [tool.uv]
 default-groups = "all"

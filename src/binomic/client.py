@@ -1,9 +1,9 @@
-import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Self
 
 import anyio
+import structlog
 from anyio import AsyncContextManagerMixin
 
 from binomic.broker import Broker, BrokerFactory
@@ -24,7 +24,7 @@ __all__ = (
 )
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.stdlib.get_logger(__name__)
 
 
 class Binomic(AsyncContextManagerMixin):

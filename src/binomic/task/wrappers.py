@@ -1,18 +1,20 @@
 import importlib
 import inspect
-import logging
 import pkgutil
 from collections.abc import Callable
 from typing import Literal, overload
 
-from .registry import TaskSpec, registry
+import structlog
 
-logger = logging.getLogger(__name__)
+from .registry import TaskSpec, registry
 
 __all__ = (
     "autodiscover",
     "task",
 )
+
+
+logger = structlog.stdlib.get_logger(__name__)
 
 
 @overload

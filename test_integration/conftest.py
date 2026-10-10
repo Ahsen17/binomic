@@ -49,21 +49,22 @@ def broker_dsn(db_index: int) -> str:
 
 
 @pytest.fixture
-def redis_dsn(broker_dsn: str) -> str:
+def probe_dsn(broker_dsn: str) -> str:
+    """The DSN the probe client and the sample tasks reach this test's database on."""
 
     return broker_dsn
 
 
 @pytest.fixture
-async def redis_client(redis_dsn: str) -> AsyncIterator[AsyncRedis]:
+async def redis_client(probe_dsn: str) -> AsyncIterator[AsyncRedis]:
     """A client on this test's database; skips the suite when Redis is down."""
 
-    client = AsyncRedis.from_url(redis_dsn, decode_responses=True)
+    client = AsyncRedis.from_url(probe_dsn, decode_responses=True)
     try:
         await client.ping()
     except Exception as err:
         await client.aclose()
-        pytest.skip(f"Real Redis unavailable at {redis_dsn}: {err}")
+        pytest.skip(f"Real Redis unavailable at {probe_dsn}: {err}")
     yield client
     await client.flushdb()
     await client.aclose()

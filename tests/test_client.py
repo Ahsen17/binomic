@@ -39,7 +39,6 @@ async def binomic(
 
     client = Binomic(
         broker_dsn="redis://localhost:6379/0",
-        redis_dsn="redis://localhost:6379/0",
         module_name="binomic",
         config=config,
     )
@@ -341,7 +340,6 @@ class TestBinomicFactory:
 
         factory = BinomicFactory(
             broker_dsn="redis://localhost:6379/0",
-            redis_dsn="redis://localhost:6379/0",
             module_name="binomic",
             config=config,
         )
@@ -352,7 +350,6 @@ class TestBinomicFactory:
 
         factory = BinomicFactory(
             broker_dsn="redis://localhost:6379/0",
-            redis_dsn="redis://localhost:6379/0",
             module_name="binomic",
             config=config,
         )

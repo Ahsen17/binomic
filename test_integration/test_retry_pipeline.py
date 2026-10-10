@@ -27,7 +27,7 @@ class TestRetryPipeline:
     async def test_a_failing_task_is_retried_then_dropped(
         self,
         broker_dsn: str,
-        redis_dsn: str,
+        probe_dsn: str,
         redis_client: AsyncRedis,
     ) -> None:
 
@@ -41,14 +41,13 @@ class TestRetryPipeline:
         )
         client = Binomic(
             broker_dsn=broker_dsn,
-            redis_dsn=redis_dsn,
             module_name="test_integration",
             config=config,
         )
 
         async with client:
             await client.submit(
-                Message(name="count_then_fail", args=[redis_dsn, attempts_key]),
+                Message(name="count_then_fail", args=[probe_dsn, attempts_key]),
             )
 
             with anyio.move_on_after(EXECUTION_TIMEOUT):

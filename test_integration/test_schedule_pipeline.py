@@ -39,12 +39,11 @@ async def wait_until(
     pytest.fail(f"condition not met within {timeout}s")
 
 
-def make_client(broker_dsn: str, redis_dsn: str) -> Binomic:
+def make_client(broker_dsn: str) -> Binomic:
     """A client that discovers the scheduled sample tasks of this pipeline."""
 
     return Binomic(
         broker_dsn=broker_dsn,
-        redis_dsn=redis_dsn,
         module_name="test_integration.schedule",
         config=BinomicConfig(queues=[SCHEDULE_QUEUE], workers=1, concurrency=2),
     )
@@ -55,16 +54,16 @@ class TestSchedulePipeline:
     async def test_delayed_task_runs_after_its_delay(
         self,
         broker_dsn: str,
-        redis_dsn: str,
+        probe_dsn: str,
         redis_client: AsyncRedis,
     ) -> None:
 
         result_key = f"binomic:e2e:delayed:{uuid4()}"
 
-        async with make_client(broker_dsn, redis_dsn) as client:
+        async with make_client(broker_dsn) as client:
             started = time.monotonic()
             await client.submit(
-                Message(name="write_delayed_result", args=[redis_dsn, result_key]),
+                Message(name="write_delayed_result", args=[probe_dsn, result_key]),
             )
 
             # Nothing here calls the job: firing it is the scheduler's.
@@ -83,13 +82,13 @@ class TestSchedulePipeline:
     async def test_interval_task_repeats_and_is_acked(
         self,
         broker_dsn: str,
-        redis_dsn: str,
+        probe_dsn: str,
         redis_client: AsyncRedis,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
 
         counter_key = f"binomic:e2e:heartbeat:{uuid4()}"
-        monkeypatch.setenv(DSN_ENV, redis_dsn)
+        monkeypatch.setenv(DSN_ENV, probe_dsn)
         monkeypatch.setenv(KEY_ENV, counter_key)
 
         async def counted_twice() -> bool:
@@ -101,7 +100,7 @@ class TestSchedulePipeline:
             pending = await redis_client.xpending(STREAM_KEY, GROUP)
             return bool(pending["pending"] == 0)
 
-        async with make_client(broker_dsn, redis_dsn):
+        async with make_client(broker_dsn):
             # Nothing submits this task: entering the context decides which
             # registered specs get scheduled, and the trigger does the rest.
             # The worker acked whatever it was handed either way, so only the

@@ -5,7 +5,7 @@ import anyio
 import pytest
 from pytest_mock import MockerFixture
 
-from binomic.worker import Master, MasterPolicy, Worker, WorkerPolicy
+from binomic.worker import Master, MasterPolicy, MasterPresence, Worker, WorkerPolicy
 from binomic.worker.master import TERMINATE_TIMEOUT
 
 # A supervision loop that iterates quickly; the default is ten seconds a tick.
@@ -17,7 +17,9 @@ LOOP_BUDGET: float = 2.0
 
 
 class TestMaster:
-    def test_holds_dsn_and_policy(self, make_master: Callable[..., Master]) -> None:
+    def test_holds_the_broker_dsn_and_policy(
+        self, make_master: Callable[..., Master]
+    ) -> None:
 
         master = make_master()
 
@@ -31,17 +33,52 @@ class TestMaster:
         master = make_master(module_name="app")
         worker_cls = mocker.patch("binomic.worker.master.Worker")
 
-        worker = master._run_proc("worker-0")
+        master._run_proc("worker-0")
 
         worker_cls.assert_called_once_with(
             broker_dsn="redis://localhost:6379/0",
-            redis_dsn="redis://localhost:6379/0",
             module_name="app",
             consumer="worker-0",
             policy=master._policy.worker,
+            presence=mocker.ANY,
         )
         worker_cls.return_value.start.assert_called_once_with()
-        assert worker is worker_cls.return_value
+        assert master._subprocesses["worker-0"] is worker_cls.return_value
+
+    def test_run_proc_wires_both_sides_to_one_cell(
+        self, make_master: Callable[..., Master], mocker: MockerFixture
+    ) -> None:
+
+        master = make_master()
+        worker_cls = mocker.patch("binomic.worker.master.Worker")
+
+        master._run_proc("worker-0")
+        worker_side = worker_cls.call_args.kwargs["presence"]
+
+        assert master._presence.presence() == {"worker-0": 0.0}
+
+        worker_side.heartbeat()
+
+        assert master._presence.presence()["worker-0"] > 0.0
+
+    def test_each_generation_gets_its_own_cell(
+        self, make_master: Callable[..., Master], mocker: MockerFixture
+    ) -> None:
+
+        master = make_master()
+        worker_cls = mocker.patch("binomic.worker.master.Worker")
+
+        master._run_proc("worker-0")
+        first_gen = worker_cls.call_args.kwargs["presence"]
+        first_gen.heartbeat()
+
+        assert master._presence.presence()["worker-0"] > 0.0
+
+        master._run_proc("worker-0")
+
+        # Handing the successor the old cell would give it its predecessor's last
+        # beat, which reads as a worker that just checked in.
+        assert master._presence.presence()["worker-0"] == 0.0
 
     def test_stop_proc_terminates_alive_worker(
         self, make_master: Callable[..., Master], mocker: MockerFixture
@@ -97,19 +134,6 @@ class TestMaster:
         workers["worker-0"].terminate.assert_called_once_with()
         workers["worker-1"].terminate.assert_not_called()
 
-    async def test_aclose_closes_presence(
-        self, make_master: Callable[..., Master], mocker: MockerFixture
-    ) -> None:
-
-        master = make_master()
-        presence = mocker.AsyncMock()
-        master._presence = presence
-
-        await master.aclose()
-
-        presence.aclose.assert_awaited_once()
-        assert master._presence is None
-
     async def test_aclose_survives_an_already_cancelled_scope(
         self, make_master: Callable[..., Master], mocker: MockerFixture
     ) -> None:
@@ -133,7 +157,7 @@ class TestMasterArun:
     ) -> None:
 
         master = make_master()
-        mocker.patch.object(master, "_run_proc", return_value=mocker.Mock(spec=Worker))
+        mocker.patch("binomic.worker.master.Worker")
         mocker.patch.object(master, "_visor", mocker.AsyncMock())
         closed = mocker.patch.object(master, "aclose", mocker.AsyncMock())
 
@@ -191,25 +215,20 @@ class TestMasterVisor:
         dead.is_alive.return_value = False
         master._subprocesses = {"worker-0": dead}
 
-        presence = mocker.AsyncMock()
+        presence = mocker.Mock(spec=MasterPresence)
         presence.presence.return_value = {"worker-0": time.time()}
-        mocker.patch("binomic.worker.master.ParentPresence", return_value=presence)
+        master._presence = presence
         stopped = mocker.patch.object(master, "_stop_proc")
-        replacement: Worker = mocker.Mock(spec=Worker)
+        worker_cls = mocker.patch("binomic.worker.master.Worker")
 
         with anyio.move_on_after(LOOP_BUDGET) as scope:
-
-            def _restart(_ident: str) -> Worker:
-
-                scope.cancel()
-
-                return replacement
-
-            mocker.patch.object(master, "_run_proc", side_effect=_restart)
+            # Cancels once the replacement is up: the visor registers it before
+            # the cancel lands, so the assertions below see a finished restart.
+            worker_cls.return_value.start.side_effect = scope.cancel
             await master._visor()
 
         stopped.assert_called_once_with(dead)
-        assert master._subprocesses["worker-0"] is replacement
+        assert master._subprocesses["worker-0"] is worker_cls.return_value
 
     async def test_restarts_a_worker_whose_heartbeat_went_stale(
         self, make_master: Callable[..., Master], mocker: MockerFixture
@@ -220,25 +239,18 @@ class TestMasterVisor:
         silent.is_alive.return_value = True
         master._subprocesses = {"worker-0": silent}
 
-        presence = mocker.AsyncMock()
+        presence = mocker.Mock(spec=MasterPresence)
         presence.presence.return_value = {"worker-0": time.time() - 100}
-        mocker.patch("binomic.worker.master.ParentPresence", return_value=presence)
+        master._presence = presence
         stopped = mocker.patch.object(master, "_stop_proc")
-        replacement: Worker = mocker.Mock(spec=Worker)
+        worker_cls = mocker.patch("binomic.worker.master.Worker")
 
         with anyio.move_on_after(LOOP_BUDGET) as scope:
-
-            def _restart(_ident: str) -> Worker:
-
-                scope.cancel()
-
-                return replacement
-
-            mocker.patch.object(master, "_run_proc", side_effect=_restart)
+            worker_cls.return_value.start.side_effect = scope.cancel
             await master._visor()
 
         stopped.assert_called_once_with(silent)
-        assert master._subprocesses["worker-0"] is replacement
+        assert master._subprocesses["worker-0"] is worker_cls.return_value
 
     async def test_leaves_a_healthy_worker_alone(
         self, make_master: Callable[..., Master], mocker: MockerFixture
@@ -249,10 +261,10 @@ class TestMasterVisor:
         alive.is_alive.return_value = True
         master._subprocesses = {"worker-0": alive}
 
-        presence = mocker.AsyncMock()
+        presence = mocker.Mock(spec=MasterPresence)
         # A heartbeat must stay fresh for the whole loop, not just the first tick.
         presence.presence.side_effect = lambda: {"worker-0": time.time()}
-        mocker.patch("binomic.worker.master.ParentPresence", return_value=presence)
+        master._presence = presence
         stopped = mocker.patch.object(master, "_stop_proc")
         restarted = mocker.patch.object(master, "_run_proc")
 

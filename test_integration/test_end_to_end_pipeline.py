@@ -19,7 +19,7 @@ class TestEndToEndPipeline:
     async def test_task_runs_in_subprocess_and_is_acked(
         self,
         broker_dsn: str,
-        redis_dsn: str,
+        probe_dsn: str,
         redis_client: AsyncRedis,
     ) -> None:
 
@@ -28,14 +28,13 @@ class TestEndToEndPipeline:
         config = BinomicConfig(queues=[E2E_QUEUE], workers=1, concurrency=2)
         client = Binomic(
             broker_dsn=broker_dsn,
-            redis_dsn=redis_dsn,
             module_name="test_integration",
             config=config,
         )
 
         async with client:
             await client.submit(
-                Message(name="write_result", args=[redis_dsn, result_key]),
+                Message(name="write_result", args=[probe_dsn, result_key]),
             )
 
             executed = False

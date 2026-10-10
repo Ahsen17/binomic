@@ -1,6 +1,6 @@
 [project]
 name = "binomic"
-version = "0.1.2"
+version = "0.1.3"
 description = "Binomic - A lightweight, customizable asynchronous task framework for Python."
 readme = "README.md"
 license = "MIT"

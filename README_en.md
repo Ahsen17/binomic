@@ -168,9 +168,7 @@ flowchart LR
   the backoff of a failed redelivery.
 - **Broker**: `AsyncredisBroker` writes messages to Redis Streams; workers read
   them through a consumer group, and messages stranded in a dead consumer's
-  PEL are redelivered via `reclaim` (`xautoclaim`), which bumps `attempt`. The
-  queue capacity limit (`queue_capacity`) is **not in effect** — the check is
-  short-circuited in the code (`# TODO`).
+  PEL are redelivered via `reclaim` (`xautoclaim`), which bumps `attempt`.
 - **Master / Worker**: the master spawns worker subprocesses through
   multiprocessing and supervises their liveness; each worker executes tasks
   concurrently within its process via `anyio`. A task that succeeds is `ack`ed;

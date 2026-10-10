@@ -67,10 +67,6 @@ def poll() -> None: ...
 提交，它们的触发由客户端在启动时自动注册（见下节）。消息进哪条 Stream 由**任务声明
 里的队列**决定，`submit` 不接受调用方指定队列。
 
-队列容量上限（`queue_capacity`）**当前未生效**（见[可靠性](reliability.md)）。它一旦启用，
-`submit` 也不会抛错：`QueueCapacityLimitError` 会在客户端内部被吞掉并记日志，消息被丢弃
-且不会重试，而 `submit` 照常返回消息 ID。
-
 ```python
 from binomic.message import Message
 

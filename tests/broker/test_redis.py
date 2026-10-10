@@ -129,11 +129,21 @@ class TestAck:
     async def test_unknown_entry_acks_nothing(
         self,
         broker: AsyncredisBroker,
-        make_message: Callable[..., Message],
     ) -> None:
 
         assert (
-            await broker.ack(Entry("default", "999-0", {"id": "x", "message": "m"})) == 0
+            await broker.ack(
+                Entry(
+                    "default",
+                    "999-0",
+                    {
+                        "id": "x",
+                        "message": "m",
+                        "enqueued_at": time.time(),
+                    },
+                )
+            )
+            == 0
         )
 
 
@@ -158,25 +168,36 @@ class TestReclaim:
         assert len(redelivered) == 1
         assert redelivered[0].fields["id"] == stale.fields["id"]
 
+        # A redelivery is another attempt, and the count rides in the payload.
+        assert Message.from_json(redelivered[0].fields["message"]).attempt == 2
+
     async def test_restamps_enqueued_at_on_redelivery(
         self,
         broker: AsyncredisBroker,
         make_message: Callable[..., Message],
     ) -> None:
 
-        msg = make_message(enqueued_at=time.time() - 7200)
-        await broker.enqueue("default", msg)
+        msg = make_message()
+
+        # A stale entry written straight to the stream: a fresh stamp is only
+        # distinguishable when the original one is old.
+        await broker.client.xadd(
+            broker.get_stream_key("default"),
+            {
+                "id": str(msg.id),
+                "message": msg.to_json(),
+                "enqueued_at": time.time() - 7200,
+            },
+        )
         await broker.acquire("dead-consumer", count=10)
 
         await broker.reclaim("consumer-1", min_idle_ms=0, count=10)
 
-        redelivered = (await broker.acquire("consumer-1", count=10))[0]
-        restored = Message.from_json(redelivered.fields["message"])
+        (redelivered,) = await broker.acquire("consumer-1", count=10)
 
         # Re-delivery is a fresh submission: keeping the old stamp would make the
         # worker drop the message as expired the moment it arrives.
-        assert restored.enqueued_at is not None
-        assert restored.enqueued_at > time.time() - 60
+        assert redelivered.fields["enqueued_at"] > time.time() - 60
 
     async def test_skips_queues_without_group(
         self, make_broker: Callable[..., AsyncredisBroker]

@@ -11,6 +11,7 @@ class Fields(TypedDict):
 
     id: str
     message: str
+    enqueued_at: float
 
 
 class Entry(NamedTuple):

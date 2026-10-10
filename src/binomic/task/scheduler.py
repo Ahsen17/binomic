@@ -40,25 +40,29 @@ class TaskScheduler:
         func: _func,
         spec: "TaskSpec",
         *,
+        delay: float | None = None,
         args: Sequence[Any] | None = None,
         kwargs: Mapping[str, Any] | None = None,
     ) -> None:
         """Delay a task."""
 
-        if spec.mode != "delay" or spec.delay is None:
+        if delay is None and (spec.mode != "delay" or spec.delay is None):
             raise ValueError("Task is not a delay task or lack `delay` value.")
 
-        if spec.delay <= 0:
+        if (delay := delay or spec.delay) is None or delay <= 0:
             raise ValueError("Delay value must be greater than 0.")
 
         self._scheduler.add_job(
             func=func,
             trigger=DateTrigger(
-                run_date=datetime.now(self._timezone) + timedelta(seconds=spec.delay),
+                run_date=datetime.now(self._timezone) + timedelta(seconds=delay),
                 timezone=self._timezone,
             ),
             args=args,
             kwargs=kwargs,
+            # A deferred job is work that must happen: one the scheduler only
+            # reaches late still fires, instead of being dropped as a missed run.
+            misfire_grace_time=None,
         )
 
     def interval(

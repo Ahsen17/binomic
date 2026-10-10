@@ -26,6 +26,8 @@ Binomic 是一个自定义异步任务框架：以装饰器声明任务，以 Re
   `cron`（cron 表达式）、`interval`（固定间隔）四种模式
 - **Redis Streams 消息代理**：基于消费者组与 PEL 的可靠投递，支持通过
   `xautoclaim` 回收失联消费者的消息
+- **失败重试**：失败或超时的消息按退避（1.5 秒起、逐次翻倍、封顶 30 秒）在
+  `max_attempts`（默认 3）之内重投
 - **多进程 Worker**：Master 以 multiprocessing 启动多个 Worker 子进程，并携
   presence 心跳持续监督
 - **类型安全**：全量 mypy strict 与 ruff 检查，任务注册表基于泛型 `TaskSpec[P, T]`
@@ -103,8 +105,9 @@ async with binomic:
 ```
 
 消息进哪条 Stream 由任务声明里的队列决定（消息上不指定队列）；`enqueued_at` 由客户端
-在投递时写入，无需手工赋值。`submit` 只支持 `direct` 与 `delay` 两种模式：`cron` 与
-`interval` 任务在客户端启动时自动注册，对其调用 `submit` 会抛 `ValueError`。
+在投递时写入该消息的 Stream entry（不是 `Message` 上的字段），无需手工赋值。`submit`
+只支持 `direct` 与 `delay` 两种模式：`cron` 与 `interval` 任务在客户端启动时自动注册，
+对其调用 `submit` 会抛 `ValueError`。
 
 ### 3. Litestar 应用中集成
 
@@ -137,6 +140,7 @@ flowchart LR
     S -->|到期投递| B
     B -->|consumer group / PEL| W1[Worker 0<br>子进程]
     B -->|consumer group / PEL| W2[Worker 1<br>子进程]
+    W1 -.->|失败或超时：退避后重投<br>attempt + 1| B
     M[Master<br>监督进程] --> W1
     M --> W2
     M -->|presence 心跳| R[(Redis)]
@@ -146,11 +150,14 @@ flowchart LR
   `enqueue` 消息；`delay` 任务交给调度器延后投递，`cron` 与 `interval` 任务不经
   `submit`，而在客户端启动时注册为周期作业。
 - **Scheduler**：`TaskScheduler` 为 `delay` / `cron` / `interval` 三种模式创建对应的
-  触发器，到期后走与 `direct` 相同的入队路径。
+  触发器，到期后走与 `direct` 相同的入队路径。每个 Worker 自己也持有一个
+  `TaskScheduler`，承担失败重投的退避延时。
 - **Broker**：`AsyncredisBroker` 将消息写入 Redis Streams，Worker 侧以消费者组
-  读取；失联消费者的 PEL 消息由 `reclaim`（`xautoclaim`）回收重投。
+  读取；失联消费者的 PEL 消息由 `reclaim`（`xautoclaim`）回收重投，重投时 `attempt + 1`。
+  队列容量上限（`queue_capacity`）**当前未生效** —— 判定在代码里被临时短路（`# TODO`）。
 - **Master / Worker**：Master 以 multiprocessing 拉起 Worker 子进程并监督其存活；
-  Worker 在进程内通过 `anyio` 以配置并发执行任务，执行结果经 `ack` 确认。
+  Worker 在进程内通过 `anyio` 以配置并发执行任务。任务成功后 `ack`；失败或超时则**退避后**
+  在 `max_attempts` 之内重投，超出后记日志丢弃；任务被取消时**不 ack**，消息留给 `reclaim`。
 
 ## 开发
 

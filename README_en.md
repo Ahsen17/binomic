@@ -29,6 +29,8 @@ reclaims work from dead consumers. Message payloads are serialized with
   modes
 - **Redis Streams broker**: reliable delivery built on consumer groups and the
   PEL, with `xautoclaim`-based reclaim of messages from dead consumers
+- **Retries**: failed or overdue messages are redelivered after a backoff
+  (1.5 seconds, doubling, capped at 30) up to `max_attempts` (3 by default)
 - **Multiprocess workers**: the master spawns worker subprocesses via
   multiprocessing and supervises them with a presence heartbeat
 - **Type safe**: fully mypy strict and ruff checked, with a generic
@@ -111,7 +113,8 @@ async with binomic:
 
 Which stream a message lands in is decided by the queue in the task
 declaration (a message does not specify one), and `enqueued_at` is written by
-the client on delivery, so it needs no manual assignment. `submit` supports
+the client on delivery into the message's stream entry (not onto the `Message`),
+so it needs no manual assignment. `submit` supports
 only the `direct` and `delay` modes: `cron` and `interval` tasks are registered
 automatically when the client starts, and calling `submit` on them raises
 `ValueError`.
@@ -148,6 +151,7 @@ flowchart LR
     S -->|enqueued when due| B
     B -->|consumer group / PEL| W1[Worker 0<br>subprocess]
     B -->|consumer group / PEL| W2[Worker 1<br>subprocess]
+    W1 -.->|failure or timeout:<br>redeliver after a backoff, attempt + 1| B
     M[Master<br>supervisor] --> W1
     M --> W2
     M -->|presence heartbeat| R[(Redis)]
@@ -160,14 +164,19 @@ flowchart LR
   starts.
 - **Scheduler**: `TaskScheduler` creates the matching trigger for each of the
   `delay` / `cron` / `interval` modes and enqueues through the same path as
-  `direct` once a job is due.
+  `direct` once a job is due. Each worker holds one of its own too, carrying
+  the backoff of a failed redelivery.
 - **Broker**: `AsyncredisBroker` writes messages to Redis Streams; workers read
   them through a consumer group, and messages stranded in a dead consumer's
-  PEL are redelivered via `reclaim` (`xautoclaim`).
+  PEL are redelivered via `reclaim` (`xautoclaim`), which bumps `attempt`. The
+  queue capacity limit (`queue_capacity`) is **not in effect** — the check is
+  short-circuited in the code (`# TODO`).
 - **Master / Worker**: the master spawns worker subprocesses through
   multiprocessing and supervises their liveness; each worker executes tasks
-  concurrently within its process via `anyio` and confirms completion with
-  `ack`.
+  concurrently within its process via `anyio`. A task that succeeds is `ack`ed;
+  one that fails or overruns is redelivered **after a backoff** while
+  `max_attempts` lasts and dropped after that; a cancelled task is **not**
+  `ack`ed, leaving its message to `reclaim`.
 
 ## Development
 

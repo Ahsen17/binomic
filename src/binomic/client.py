@@ -1,5 +1,4 @@
 import logging
-import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Self
@@ -7,7 +6,7 @@ from typing import TYPE_CHECKING, Self
 import anyio
 from anyio import AsyncContextManagerMixin
 
-from binomic.broker import Broker, BrokerFactory
+from binomic.broker import Broker, BrokerFactory, QueueCapacityLimitError
 from binomic.message import Message
 from binomic.task import TaskScheduler, autodiscover
 from binomic.task.registry import registry
@@ -52,20 +51,25 @@ class Binomic(AsyncContextManagerMixin):
         self._scheduler: TaskScheduler | None = None
 
     async def arun(self) -> None:
+        try:
+            if self._broker is None:
+                self._broker = BrokerFactory(
+                    self._broker_dsn,
+                    self._config.queues,
+                    self._config.queue_capacity,
+                ).create()
+                await self._broker.initialize()
 
-        if self._broker is None:
-            self._broker = BrokerFactory(
-                self._broker_dsn,
-                self._config.queues,
-            )()
+            if self._scheduler is None:
+                scheduler = TaskScheduler()
+                scheduler.start()
+                self._scheduler = scheduler
 
-            await self._broker.initialize()
+            autodiscover(self._module_name)
 
-        if self._scheduler is None:
-            self._scheduler = TaskScheduler()
-            self._scheduler.start()
-
-        autodiscover(self._module_name)
+        except BaseException:
+            await self.aclose()
+            raise
 
     async def aclose(self) -> None:
 
@@ -82,11 +86,11 @@ class Binomic(AsyncContextManagerMixin):
         if self._broker is None:
             raise RuntimeError("Run client `arun` before submitting messages.")
 
-        # Stamped here rather than at construction: delay waits for its deadline,
-        # and cron and interval reuse one Message across firings.
-        msg.enqueued_at = time.time()
+        try:
+            await self._broker.enqueue(queue, msg)
 
-        await self._broker.enqueue(queue, msg)
+        except QueueCapacityLimitError:
+            logger.error("Queue capacity limit exceeded, message dropped.")
 
     async def submit(self, msg: "Message") -> "UUID":
         """Dispatch a message to its task.
@@ -165,6 +169,12 @@ class Binomic(AsyncContextManagerMixin):
                 worker=WorkerPolicy(
                     queues=self._config.queues,
                     concurrency=self._config.concurrency,
+                    task_timeout=600.0,
+                    max_attempts=self._config.max_attempts,
+                    read_count=10,
+                    poll_interval=0.1,
+                    heartbeat_interval=5.0,
+                    reclaim_interval=30.0,
                 ),
             ),
         )

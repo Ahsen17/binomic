@@ -51,6 +51,15 @@ class TestParentPresence:
 
         assert await presence.presence() == {}
 
+    async def test_aclose_closes_redis_client(self, mocker: MockerFixture) -> None:
+
+        client = mocker.AsyncMock()
+        presence = ParentPresence(client)
+
+        await presence.aclose()
+
+        client.aclose.assert_awaited_once()
+
 
 class TestSubprocessPresence:
     async def test_heartbeat_invokes_presence_script(self, mocker: MockerFixture) -> None:
@@ -79,3 +88,14 @@ class TestSubprocessPresence:
 
         client.register_script.assert_called_once()
         assert presence._hb_script is client.register_script.return_value
+
+    async def test_aclose_closes_redis_client(self, mocker: MockerFixture) -> None:
+
+        client = mocker.Mock()
+        client.register_script.return_value = mocker.AsyncMock()
+        client.aclose = mocker.AsyncMock()
+        presence = SubprocessPresence(client)
+
+        await presence.aclose()
+
+        client.aclose.assert_awaited_once()

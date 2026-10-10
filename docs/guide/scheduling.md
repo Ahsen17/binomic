@@ -67,6 +67,10 @@ def poll() -> None: ...
 提交，它们的触发由客户端在启动时自动注册（见下节）。消息进哪条 Stream 由**任务声明
 里的队列**决定，`submit` 不接受调用方指定队列。
 
+队列容量上限（`queue_capacity`）**当前未生效**（见[可靠性](reliability.md)）。它一旦启用，
+`submit` 也不会抛错：`QueueCapacityLimitError` 会在客户端内部被吞掉并记日志，消息被丢弃
+且不会重试，而 `submit` 照常返回消息 ID。
+
 ```python
 from binomic.message import Message
 
@@ -122,13 +126,19 @@ asyncio.run(main())
   该时区。
 - **`spec` 从哪来**：`@task(...)` 装饰器的返回值就是一个 `TaskSpec`，它提供时序参数
   （`delay` / `cron` / `interval`）并参与校验。
-- **方法**：`delay(func, spec, *, args=None, kwargs=None)`、
-  `interval(...)`、`cron(...)` 三个方法签名一致，均为**同步方法**；`func` 是到期时要
-  调用的可调用对象，`args` / `kwargs` 原样传给 `func`。
+- **方法**：`delay(func, spec, *, delay=None, args=None, kwargs=None)`、
+  `interval(...)`、`cron(...)` 均为**同步方法**；`func` 是到期时要调用的可调用对象，
+  `args` / `kwargs` 原样传给 `func`。`delay` 多一个可选关键字 `delay`：给出时直接用它
+  作为延时秒数，并**跳过**「`spec` 必须是 `delay` 模式」那一条校验 —— Worker 的失败重投
+  正是靠它，把一个非 delay 模式的 `spec` 排成延时作业（见[可靠性](reliability.md)）。
 - **校验**：`spec` 的模式与所调方法不符、或缺少对应取值时抛 `ValueError`（如
-  ``Task is not a delay task or lack `delay` value.``）。`delay` 与 `interval` 的取值
-  `<= 0` 时也抛 `ValueError`（``... must be greater than 0.``）；`cron` 没有非正值校验
-  —— cron 表达式不存在「非正值」的概念。
+  ``Task is not a delay task or lack `delay` value.``，仅当未显式给出 `delay` 时生效）。
+  `delay` 与 `interval` 的取值 `<= 0` 时也抛 `ValueError`
+  （``... must be greater than 0.``）；`cron` 没有非正值校验 —— cron 表达式不存在
+  「非正值」的概念。
 - **生命周期**：`start()` 之后作业才会真正触发，`shutdown()` 停机，二者均为同步方法。
   注意 `shutdown()` 紧跟在调度之后调用会让作业来不及触发（上例用
   `await asyncio.sleep(6)` 等到达期）。
+- **迟到也执行**：排出的作业带 `misfire_grace_time=None`，因此即便调度器在 `run_date`
+  之后才轮到它（事件循环被占住、或进程一度停顿），作业照样触发，不会被当作「错过的运行」
+  而静默丢弃 —— 延后投递代表的是**必须发生**的动作。

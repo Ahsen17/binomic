@@ -6,3 +6,4 @@ during collection.
 """
 
 E2E_QUEUE: str = "e2e-pipeline"
+RETRY_QUEUE: str = "retry-pipeline"

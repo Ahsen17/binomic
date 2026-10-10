@@ -1,8 +1,10 @@
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import anyio
 import anyio.lowlevel
 import pytest
 from apscheduler.triggers.cron import CronTrigger
@@ -169,6 +171,37 @@ class TestTaskSchedulerJobs:
             <= datetime.now(UTC) + timedelta(seconds=30)
         )
 
+    @pytest.mark.parametrize(
+        ("spec_kwargs", "seconds"),
+        [
+            # A redelivery defers for a spec that is not a delay task at all.
+            pytest.param({}, 5.0, id="a-direct-task"),
+            pytest.param(
+                {"mode": "delay", "delay": 300.0},
+                5.0,
+                id="overriding-the-declared-delay",
+            ),
+        ],
+    )
+    def test_an_explicit_delay_defers_for_that_many_seconds(
+        self,
+        scheduler: TaskScheduler,
+        make_spec: Callable[..., TaskSpec],
+        spec_kwargs: dict[str, Any],
+        seconds: float,
+    ) -> None:
+
+        before = datetime.now(UTC)
+
+        scheduler.delay(target, make_spec(**spec_kwargs), delay=seconds)
+
+        (job,) = scheduler._scheduler.get_jobs()
+        assert (
+            before + timedelta(seconds=seconds)
+            <= job.trigger.run_date
+            <= datetime.now(UTC) + timedelta(seconds=seconds)
+        )
+
     def test_interval_repeats_every_interval(
         self,
         scheduler: TaskScheduler,
@@ -252,6 +285,34 @@ class TestTaskSchedulerJobs:
 
 
 class TestTaskSchedulerLifecycle:
+    async def test_a_delay_the_loop_reaches_late_still_runs(
+        self,
+        scheduler: TaskScheduler,
+        make_spec: Callable[..., TaskSpec],
+    ) -> None:
+        """A deferred job runs late rather than being discarded as a missed one."""
+
+        fired: list[str] = []
+
+        scheduler.start()
+        scheduler.delay(
+            lambda: fired.append("late"),
+            make_spec(mode="delay", delay=0.05),
+        )
+
+        # Blocking the loop is the scenario under test, not an accident: the
+        # default grace is one second, so stalling past it is what separates
+        # "runs late" from "skipped as missed".
+        time.sleep(1.05)  # noqa: ASYNC251
+
+        with anyio.fail_after(1.0):
+            while not fired:
+                await anyio.sleep(0.01)
+
+        scheduler.shutdown()
+
+        assert fired == ["late"]
+
     async def test_start_and_shutdown_toggle_the_scheduler(
         self, scheduler: TaskScheduler
     ) -> None:

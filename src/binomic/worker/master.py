@@ -124,3 +124,7 @@ class Master:
         with anyio.CancelScope(shield=True):
             for proc in self._subprocesses.values():
                 await anyio.to_thread.run_sync(self._stop_proc, proc)
+
+            if self._presence is not None:
+                await self._presence.aclose()
+                self._presence = None

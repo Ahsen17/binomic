@@ -97,6 +97,19 @@ class TestMaster:
         workers["worker-0"].terminate.assert_called_once_with()
         workers["worker-1"].terminate.assert_not_called()
 
+    async def test_aclose_closes_presence(
+        self, make_master: Callable[..., Master], mocker: MockerFixture
+    ) -> None:
+
+        master = make_master()
+        presence = mocker.AsyncMock()
+        master._presence = presence
+
+        await master.aclose()
+
+        presence.aclose.assert_awaited_once()
+        assert master._presence is None
+
     async def test_aclose_survives_an_already_cancelled_scope(
         self, make_master: Callable[..., Master], mocker: MockerFixture
     ) -> None:

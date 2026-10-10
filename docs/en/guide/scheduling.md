@@ -82,6 +82,12 @@ automatically by the client at startup (see the next section). Which stream a
 message lands in is decided by the **queue in the task declaration**; `submit`
 does not take a caller-specified queue.
 
+The queue capacity limit (`queue_capacity`) is **not in effect** right now (see
+[Reliability](reliability.md)). Were it enabled, a full queue would be different:
+`submit` raises **nothing** — the `QueueCapacityLimitError` is swallowed inside
+the client and logged, the message is dropped without a retry, and `submit`
+still returns the message ID.
+
 ```python
 from binomic.message import Message
 
@@ -143,17 +149,26 @@ the validation; the callable actually invoked is `send_reminder`, passed as
 - **Where `spec` comes from**: the return value of the `@task(...)` decorator
   is a `TaskSpec`; it supplies the timing parameters (`delay` / `cron` /
   `interval`) and participates in validation.
-- **Methods**: `delay(func, spec, *, args=None, kwargs=None)`, `interval(...)`,
-  and `cron(...)` share one signature, and all three are **synchronous
-  methods**; `func` is the callable to invoke when a job is due, and `args` /
-  `kwargs` are passed through to it unchanged.
+- **Methods**: `delay(func, spec, *, delay=None, args=None, kwargs=None)`,
+  `interval(...)`, and `cron(...)` are all **synchronous methods**; `func` is the
+  callable to invoke when a job is due, and `args` / `kwargs` are passed through
+  to it unchanged. `delay` takes one extra optional keyword, `delay`: when given
+  it is used as the number of seconds directly and the "`spec` must be a delay
+  task" check is **skipped** — this is what lets a worker's failed redelivery
+  defer a `spec` that is not a delay task at all (see
+  [Reliability](reliability.md)).
 - **Validation**: a `ValueError` is raised if `spec`'s mode does not match the
   method called, or if the corresponding value is missing (for example
-  ``Task is not a delay task or lack `delay` value.``). `delay` and `interval`
-  also raise `ValueError` when the value is `<= 0`
-  (``... must be greater than 0.``); `cron` has no positivity check — a cron
-  expression has no notion of "non-positive".
+  ``Task is not a delay task or lack `delay` value.`` — only when no explicit
+  `delay` was given). `delay` and `interval` also raise `ValueError` when the
+  value is `<= 0` (``... must be greater than 0.``); `cron` has no positivity
+  check — a cron expression has no notion of "non-positive".
 - **Lifecycle**: jobs only start firing after `start()` is called, and
   `shutdown()` stops them. Both are synchronous methods. Note that calling
   `shutdown()` immediately after scheduling leaves no time for the job to fire
   (the example above waits with `await asyncio.sleep(6)`).
+- **A late job still runs**: deferred jobs are scheduled with
+  `misfire_grace_time=None`, so even when the scheduler only gets around to one
+  after its `run_date` (the event loop was busy, or the process stalled), it
+  still fires instead of being discarded as a missed run — a deferred delivery
+  stands for work that must happen.

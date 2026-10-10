@@ -6,11 +6,12 @@ from typing import TYPE_CHECKING
 import anyio
 from redis.asyncio import Redis as AsyncRedis
 
-from binomic.base import SerializationError
+from binomic.base import DeserializationError
 from binomic.broker import BrokerFactory, Entry
 from binomic.message import Message
 from binomic.task import TaskNotFoundError, autodiscover
 from binomic.task.registry import registry
+from binomic.task.scheduler import TaskScheduler
 
 from .presence import SubprocessPresence
 
@@ -61,6 +62,7 @@ class Worker(SpawnProcess):
         # A spawned child only receives picklable data, so the AnyIO primitives
         # are created in `arun` instead of here.
         self._semaphore: anyio.Semaphore | None = None
+        self._scheduler: TaskScheduler | None = None
         self._terminate: anyio.Event | None = None
 
     async def arun(self) -> None:
@@ -69,9 +71,13 @@ class Worker(SpawnProcess):
             self._broker = BrokerFactory(
                 dsn=self._broker_dsn,
                 queues=self._policy.queues,
-            )()
+            ).create()
 
             await self._broker.initialize()
+
+        if self._scheduler is None:
+            self._scheduler = TaskScheduler()
+            self._scheduler.start()
 
         # Task discovery happens in the process that executes the tasks.
         autodiscover(self._module_name)
@@ -129,52 +135,105 @@ class Worker(SpawnProcess):
 
             await anyio.sleep(self._policy.heartbeat_interval)
 
+    def _backoff(self, attempt: int) -> float:
+
+        return float(min(1.5 * (2 ** (attempt - 1)), 30.0))
+
     async def _run(self, entry: "Entry") -> None:
 
-        _, _, fields = entry
+        queue, _, fields = entry
 
-        if self._broker is None:
-            raise RuntimeError("Broker is not initialized.")
+        # Both are assembled by `arun`. Without the scheduler a redelivery would
+        # be dropped silently -- the entry is acked as soon as the retry is
+        # scheduled -- so failing loudly beats losing the message.
+        if self._broker is None or self._scheduler is None:
+            raise RuntimeError("Worker is not initialized.")
+
+        cancelled = False
 
         try:
-            msg = Message.from_json(fields.get("message"))
+            msg = Message.from_json(fields["message"])
 
-            # An unstamped message has an unknown age; treat it as freshly enqueued.
-            enqueued_at = msg.enqueued_at if msg.enqueued_at is not None else time.time()
+            if (
+                elapsed := time.time() - fields["enqueued_at"]
+            ) > self._policy.task_timeout:
+                logger.warning("Message %s has expired.", fields["id"])
 
-            if (elapsed := time.time() - enqueued_at) > self._policy.task_timeout:
-                logger.warning("Message %s has expired", fields.get("id"))
+            else:
+                try:
+                    with anyio.fail_after(self._policy.task_timeout - elapsed):
+                        await registry.get(msg.name)(*msg.args, **msg.kwargs)
+
+                        return
+
+                except BaseException as err:
+                    if isinstance(
+                        err,
+                        (anyio.get_cancelled_exc_class(), TaskNotFoundError),
+                    ):
+                        # Cancellation keeps the entry pending and an unregistered
+                        # task is not worth retrying: the outer handlers own both.
+                        raise
+
+                    logger.error(
+                        "Failed to process message %s: %s",
+                        fields["id"],
+                        str(err),
+                    )
+
+            # The invocation did not succeed: retry it until the budget is spent.
+            backoff = self._backoff(msg.attempt)
+            msg.attempt += 1
+            if msg.attempt > self._policy.max_attempts:
+                logger.warning(
+                    "Failed to process message %s: max attempts reached.",
+                    fields["id"],
+                )
+
+                # TODO: send to DLQ
                 return
 
-            with anyio.fail_after(self._policy.task_timeout - elapsed):
-                await registry.get(msg.name)(*msg.args, **msg.kwargs)
+            self._scheduler.delay(
+                func=self._broker.enqueue,
+                spec=registry.get(msg.name),
+                delay=backoff,
+                args=(queue, msg),
+            )
 
-        except (SerializationError, TaskNotFoundError) as err:
+        except TaskNotFoundError as err:
             logger.error(
                 "Failed to process message %s: %s",
-                fields.get("id"),
+                fields["id"],
                 str(err),
             )
-            return
 
-        except TimeoutError as err:
-            logger.warning("Message %s timed out: %s", fields.get("id"), str(err))
-            return
+        except DeserializationError as err:
+            logger.error(
+                "Failed to deserialize message %s: %s",
+                fields["id"],
+                str(err),
+            )
+
+            # TODO: send to DLQ
 
         except BaseException as exc:
             if isinstance(exc, anyio.get_cancelled_exc_class()):
-                await self.aclose()
-
+                # A cancelled run keeps the message pending for the reclaim pass.
+                cancelled = True
                 raise
 
             logger.error(
                 "Failed to process message %s: %s",
-                fields.get("id"),
+                fields["id"],
                 str(exc),
             )
 
+            # TODO: send to DLQ
+
         finally:
-            await self._broker.ack(entry)
+            if not cancelled:
+                await self._broker.ack(entry)
+
             if self._semaphore is not None:
                 self._semaphore.release()
 
@@ -186,6 +245,14 @@ class Worker(SpawnProcess):
         if self._timers and not self._timers.cancel_scope.cancel_called:
             self._timers.cancel_scope.cancel()
             self._timers = None
+
+        if self._presence is not None:
+            await self._presence.aclose()
+            self._presence = None
+
+        if self._scheduler is not None:
+            self._scheduler.shutdown()
+            self._scheduler = None
 
     def run(self) -> None:
 

@@ -48,6 +48,10 @@ class ParentPresence:
             json.decode(await self._client.get(ALIVE_PRESENCE_KEY) or "{}"),
         )
 
+    async def aclose(self) -> None:
+
+        await self._client.aclose()
+
 
 class SubprocessPresence:
     """Subprocess presence detection."""
@@ -63,3 +67,7 @@ class SubprocessPresence:
             keys=[ALIVE_PRESENCE_KEY],
             args=[ident, str(time.time())],
         )
+
+    async def aclose(self) -> None:
+
+        await self._client.aclose()

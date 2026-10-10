@@ -123,9 +123,9 @@ class AsyncredisBroker(Broker):
             # No group, no capacity.
             return False
 
-        grp_info = infos[self._group]
+        # grp_info = infos[self._group]  # noqa: ERA001
+        # return grp_info.pending + grp_info.lag >= self._queue_capacity  # noqa: ERA001
         return False  # TODO: there is a bug
-        return grp_info.pending + grp_info.lag >= self._queue_capacity
 
     async def enqueue(self, queue: str, msg: "Message") -> "UUID":
 

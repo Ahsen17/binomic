@@ -27,7 +27,7 @@ async def interval_example() -> None:
     print(f"[None][INTERVAL] Current time: {time.time()}")  # noqa: T201
 
 
-@task(queue="fail")
+@task(queue="fail", mode="direct")
 async def fail_example(index: int = 0) -> None:
 
     raise RuntimeError(f"This task should fail: {index}")

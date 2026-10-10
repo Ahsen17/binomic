@@ -1,73 +1,58 @@
 import time
-from typing import TYPE_CHECKING, Final, cast
-
-from msgspec import json
-
-from binomic.base.constants import APP_NAME
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from redis.asyncio import Redis as AsyncRedis
+    from multiprocessing.sharedctypes import Synchronized
 
 
 __all__ = (
-    "ParentPresence",
+    "MasterPresence",
     "SubprocessPresence",
 )
 
 
-ALIVE_PRESENCE_KEY: Final[str] = f"{APP_NAME}:alive:presence"
+class MasterPresence:
+    """Master-side view of the liveness of every worker.
 
+    One instance covers the whole worker set, the way the map it replaced did:
+    ``presence()`` returns every watched worker's last beat. Comparing that map
+    against the clock is how the visor tells a worker that is stuck apart from
+    one that is merely idle: ``is_alive`` stays true while a stalled worker
+    stops writing.
+    """
 
-_SCRIPT = """
-local raw = redis.call('GET', KEYS[1])
-local p = {}
-if raw then
-    p = cjson.decode(raw)
-end
-p[ARGV[1]] = tonumber(ARGV[2])
-redis.call('SET', KEYS[1], cjson.encode(p))
-return 1
-"""
+    def __init__(self) -> None:
 
+        self._cells: dict[str, Synchronized[float]] = {}
 
-class ParentPresence:
-    """Parent presence detection."""
+    def watch(self, ident: str, cell: "Synchronized[float]") -> None:
+        """Take over the cell a worker beats on, replacing any earlier one."""
 
-    def __init__(self, client: "AsyncRedis") -> None:
+        self._cells[ident] = cell
 
-        self._client = client
+    def presence(self) -> dict[str, float]:
+        """The last beat of every watched worker.
 
-    async def initialize(self) -> None:
+        Each cell is read through its object, without taking its lock: the lock
+        exists for read-modify-write sequences and nothing here does one. Taking
+        it would mean waiting on a worker that died -- or was stopped -- while
+        holding it, which would wedge the visor for good.
+        """
 
-        await self._client.set(ALIVE_PRESENCE_KEY, "{}")
-
-    async def presence(self) -> dict[str, float]:
-
-        return cast(
-            "dict[str, float]",
-            json.decode(await self._client.get(ALIVE_PRESENCE_KEY) or "{}"),
-        )
-
-    async def aclose(self) -> None:
-
-        await self._client.aclose()
+        return {ident: cell.get_obj().value for ident, cell in self._cells.items()}
 
 
 class SubprocessPresence:
-    """Subprocess presence detection."""
+    """Subprocess-side view of a worker's liveness.
 
-    def __init__(self, client: "AsyncRedis") -> None:
+    Borrows the cell the master created: the master owns it and frees it, so
+    nothing here closes it.
+    """
 
-        self._client = client
-        self._hb_script = client.register_script(_SCRIPT)
+    def __init__(self, heartbeat: "Synchronized[float]") -> None:
 
-    async def heartbeat(self, ident: str) -> None:
+        self._heartbeat = heartbeat
 
-        await self._hb_script(
-            keys=[ALIVE_PRESENCE_KEY],
-            args=[ident, str(time.time())],
-        )
+    def heartbeat(self) -> None:
 
-    async def aclose(self) -> None:
-
-        await self._client.aclose()
+        self._heartbeat.value = time.time()

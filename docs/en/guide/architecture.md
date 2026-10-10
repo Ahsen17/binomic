@@ -1,7 +1,7 @@
 # Architecture
 
 ```{mermaid}
-flowchart LR
+flowchart TD
     P[Producer<br>Binomic client] -->|submit: direct| B[AsyncredisBroker<br>Redis Streams]
     P -->|submit: delay| S[TaskScheduler]
     P -.->|registered at startup: cron / interval| S
@@ -9,9 +9,10 @@ flowchart LR
     B -->|consumer group / PEL| W1[Worker 0<br>subprocess]
     B -->|consumer group / PEL| W2[Worker 1<br>subprocess]
     W1 -.->|failure or timeout:<br>redeliver after a backoff, attempt + 1| B
-    M[Master<br>supervisor] --> W1
-    M --> W2
-    M -->|presence heartbeat| R[(Redis)]
+    M[Master<br>supervisor] -->|restart when dead| W1
+    M -->|restart when dead| W2
+    W1 -.->|presence heartbeat: IPC| M
+    W2 -.->|presence heartbeat: IPC| M
 ```
 
 ## Components
@@ -33,9 +34,15 @@ flowchart LR
   consumer are reclaimed and redelivered by `reclaim` (`xautoclaim`), which
   bumps `attempt`.
 - **Master / Worker**: the master spawns worker subprocesses through
-  multiprocessing and supervises their liveness; each worker executes tasks
-  concurrently with `anyio` inside its process. A task that succeeds is
-  `ack`ed; one that fails or overruns is redelivered **after a backoff** while
-  `max_attempts` lasts (the wait is deferred through the worker's own
-  scheduler) and dropped after that; a cancelled task is **not** `ack`ed,
-  leaving its message to `reclaim`. See [Reliability](reliability.md).
+  multiprocessing and supervises their liveness. The heartbeat goes over
+  **inter-process IPC** rather than Redis: the master creates one shared
+  `multiprocessing.Value` per worker and hands it to the child as a `Worker`
+  constructor argument, the child stamps a timestamp into it on every interval,
+  and the master reads it directly to judge death. That keeps a process which is
+  up but has stopped beating distinguishable from one that is gone -- the case
+  `is_alive()` alone cannot see. Each worker executes tasks concurrently with
+  `anyio` inside its process. A task that succeeds is `ack`ed; one that fails or
+  overruns is redelivered **after a backoff** while `max_attempts` lasts (the
+  wait is deferred through the worker's own scheduler) and dropped after that; a
+  cancelled task is **not** `ack`ed, leaving its message to `reclaim`. See
+  [Reliability](reliability.md).

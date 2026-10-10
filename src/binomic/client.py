@@ -37,13 +37,11 @@ class Binomic(AsyncContextManagerMixin):
     def __init__(
         self,
         broker_dsn: str,
-        redis_dsn: str,
         module_name: str,
         config: "BinomicConfig",
     ) -> None:
 
         self._broker_dsn = broker_dsn
-        self._redis_dsn = redis_dsn
         self._module_name = module_name
         self._config = config
 
@@ -157,7 +155,6 @@ class Binomic(AsyncContextManagerMixin):
 
         master = Master(
             broker_dsn=self._broker_dsn,
-            redis_dsn=self._redis_dsn,
             module_name=self._module_name,
             policy=MasterPolicy(
                 workers=self._config.workers,
@@ -198,13 +195,11 @@ class BinomicFactory:
     def __init__(
         self,
         broker_dsn: str,
-        redis_dsn: str,
         module_name: str,
         config: "BinomicConfig",
     ) -> None:
 
         self._broker_dsn = broker_dsn
-        self._redis_dsn = redis_dsn
         self._module_name = module_name
         self._config = config
 
@@ -216,7 +211,6 @@ class BinomicFactory:
         if self._binomic is None:
             self._binomic = Binomic(
                 broker_dsn=self._broker_dsn,
-                redis_dsn=self._redis_dsn,
                 module_name=self._module_name,
                 config=self._config,
             )

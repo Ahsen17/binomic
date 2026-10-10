@@ -1,101 +1,94 @@
 import time
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
-from fakeredis import FakeAsyncRedis
 from pytest_mock import MockerFixture
 
-from binomic.worker.presence import (
-    ALIVE_PRESENCE_KEY,
-    ParentPresence,
-    SubprocessPresence,
-)
+from binomic.worker.presence import MasterPresence, SubprocessPresence
 
-
-class TestParentPresence:
-    async def test_initialize_resets_presence_map(
-        self, fake_redis: FakeAsyncRedis
-    ) -> None:
-
-        presence = ParentPresence(fake_redis)
-
-        await presence.initialize()
-
-        assert await fake_redis.get(ALIVE_PRESENCE_KEY) == "{}"
-
-    async def test_presence_is_empty_before_heartbeats(
-        self,
-        fake_redis: FakeAsyncRedis,
-    ) -> None:
-
-        presence = ParentPresence(fake_redis)
-        await presence.initialize()
-
-        assert await presence.presence() == {}
-
-    async def test_presence_reads_recorded_idents(
-        self,
-        fake_redis: FakeAsyncRedis,
-    ) -> None:
-
-        presence = ParentPresence(fake_redis)
-        await presence.initialize()
-        await fake_redis.set(ALIVE_PRESENCE_KEY, '{"worker-0": 123.5}')
-
-        assert await presence.presence() == {"worker-0": 123.5}
-
-    async def test_presence_tolerates_missing_key(
-        self,
-        fake_redis: FakeAsyncRedis,
-    ) -> None:
-
-        presence = ParentPresence(fake_redis)
-
-        assert await presence.presence() == {}
-
-    async def test_aclose_closes_redis_client(self, mocker: MockerFixture) -> None:
-
-        client = mocker.AsyncMock()
-        presence = ParentPresence(client)
-
-        await presence.aclose()
-
-        client.aclose.assert_awaited_once()
+if TYPE_CHECKING:
+    from multiprocessing.sharedctypes import Synchronized
 
 
 class TestSubprocessPresence:
-    async def test_heartbeat_invokes_presence_script(self, mocker: MockerFixture) -> None:
-
-        script = mocker.AsyncMock()
-        client = mocker.Mock()
-        client.register_script.return_value = script
-        presence = SubprocessPresence(client)
-
-        before = time.time()
-        await presence.heartbeat("worker-0")
-
-        script.assert_awaited_once()
-        call = script.await_args
-        assert call.kwargs["keys"] == [ALIVE_PRESENCE_KEY]
-        ident, stamp = call.kwargs["args"]
-        assert ident == "worker-0"
-        assert float(stamp) >= before
-
-    async def test_heartbeat_uses_shared_presence_script(
-        self, mocker: MockerFixture
+    def test_heartbeat_stamps_the_current_time(
+        self, heartbeat: "Synchronized[float]", mocker: MockerFixture
     ) -> None:
 
-        client = mocker.Mock()
-        presence = SubprocessPresence(client)
+        mocker.patch("binomic.worker.presence.time.time", return_value=1234.5)
 
-        client.register_script.assert_called_once()
-        assert presence._hb_script is client.register_script.return_value
+        SubprocessPresence(heartbeat).heartbeat()
 
-    async def test_aclose_closes_redis_client(self, mocker: MockerFixture) -> None:
+        assert heartbeat.value == 1234.5
 
-        client = mocker.Mock()
-        client.register_script.return_value = mocker.AsyncMock()
-        client.aclose = mocker.AsyncMock()
-        presence = SubprocessPresence(client)
+    def test_heartbeat_writes_a_current_timestamp(
+        self, heartbeat: "Synchronized[float]"
+    ) -> None:
 
-        await presence.aclose()
+        before = time.time()
 
-        client.aclose.assert_awaited_once()
+        SubprocessPresence(heartbeat).heartbeat()
+
+        assert before <= heartbeat.value <= time.time()
+
+
+class TestMasterPresence:
+    def test_reads_the_cell_of_a_watched_worker(
+        self, heartbeat: "Synchronized[float]"
+    ) -> None:
+
+        presence = MasterPresence()
+        presence.watch("worker-0", heartbeat)
+
+        heartbeat.value = 123.5
+
+        assert presence.presence() == {"worker-0": 123.5}
+
+    def test_reads_zero_before_the_first_beat(
+        self, heartbeat: "Synchronized[float]"
+    ) -> None:
+
+        presence = MasterPresence()
+        presence.watch("worker-0", heartbeat)
+
+        assert presence.presence() == {"worker-0": 0.0}
+
+    def test_sees_what_the_worker_wrote(
+        self, heartbeat: "Synchronized[float]", mocker: MockerFixture
+    ) -> None:
+
+        mocker.patch("binomic.worker.presence.time.time", return_value=42.0)
+
+        presence = MasterPresence()
+        presence.watch("worker-0", heartbeat)
+        SubprocessPresence(heartbeat).heartbeat()
+
+        assert presence.presence() == {"worker-0": 42.0}
+
+    def test_covers_every_watched_worker(
+        self, make_heartbeat: Callable[[], "Synchronized[float]"]
+    ) -> None:
+        """One monitor over the whole set: each worker reads off its own cell."""
+
+        presence = MasterPresence()
+        presence.watch("worker-0", make_heartbeat())
+        presence.watch("worker-1", make_heartbeat())
+
+        assert presence.presence() == {"worker-0": 0.0, "worker-1": 0.0}
+
+    def test_watching_again_replaces_only_that_worker(
+        self, make_heartbeat: Callable[[], "Synchronized[float]"]
+    ) -> None:
+        """A restarted worker's fresh cell supersedes the one it left behind."""
+
+        abandoned = make_heartbeat()
+        untouched = make_heartbeat()
+        presence = MasterPresence()
+        presence.watch("worker-0", abandoned)
+        presence.watch("worker-1", untouched)
+
+        abandoned.value = 7.0
+        untouched.value = 8.0
+        presence.watch("worker-0", make_heartbeat())
+
+        assert presence.presence() == {"worker-0": 0.0, "worker-1": 8.0}

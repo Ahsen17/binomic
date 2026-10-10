@@ -1,11 +1,11 @@
 import logging
 import time
+from multiprocessing import get_context
 from typing import TYPE_CHECKING, Final
 
 import anyio
-from redis.asyncio import Redis as AsyncRedis
 
-from .presence import ParentPresence
+from .presence import MasterPresence, SubprocessPresence
 from .worker import Worker
 
 if TYPE_CHECKING:
@@ -29,33 +29,40 @@ class Master:
         self,
         *,
         broker_dsn: str,
-        redis_dsn: str,
         module_name: str,
         policy: "MasterPolicy",
     ) -> None:
 
         self._broker_dsn = broker_dsn
-        self._redis_dsn = redis_dsn
         self._module_name = module_name
         self._policy = policy
 
         self._subprocesses: dict[str, Worker] = {}
-        self._presence: ParentPresence | None = None
+        self._presence = MasterPresence()
 
-    def _run_proc(self, ident: str) -> "Worker":
+    def _run_proc(self, ident: str) -> None:
+
+        # A spawned child only receives picklable data, so the channel is built
+        # here and handed over as part of the process object. It is rebuilt with
+        # the worker: a cell inherited from the previous generation still holds
+        # its last beat, which would read as a worker that just checked in.
+        heartbeat = get_context("spawn").Value("d", 0.0)
 
         worker = Worker(
             broker_dsn=self._broker_dsn,
-            redis_dsn=self._redis_dsn,
             module_name=self._module_name,
             consumer=ident,
             policy=self._policy.worker,
+            presence=SubprocessPresence(heartbeat),
         )
 
         worker.start()
         logger.info("Worker [%s] started.", ident)
 
-        return worker
+        # Recorded together, so a worker can never reach the table without the
+        # cell the visor reads it through.
+        self._presence.watch(ident, heartbeat)
+        self._subprocesses[ident] = worker
 
     def _stop_proc(self, worker: "Worker") -> None:
 
@@ -75,9 +82,7 @@ class Master:
 
         try:
             for i in range(self._policy.workers):
-                ident = f"worker-{i}"
-
-                self._subprocesses[ident] = self._run_proc(ident)
+                self._run_proc(f"worker-{i}")
 
             await self._visor()
 
@@ -92,29 +97,22 @@ class Master:
 
     async def _visor(self) -> None:
 
-        if self._presence is None:
-            self._presence = ParentPresence(
-                AsyncRedis.from_url(self._redis_dsn, decode_responses=True),
-            )
-            await self._presence.initialize()
-
         while True:
             await anyio.sleep(self._policy.worker.heartbeat_interval * 2)
 
             now = time.time()
-            status = await self._presence.presence()
+            status = self._presence.presence()
 
-            for ident in self._subprocesses:
+            for ident, worker in self._subprocesses.items():
                 if (
                     now - status.get(ident, 0)
                     > self._policy.worker.heartbeat_interval * 3
-                    or not self._subprocesses[ident].is_alive()
+                    or not worker.is_alive()
                 ):
-                    worker = self._subprocesses[ident]
                     await anyio.to_thread.run_sync(self._stop_proc, worker)
 
                     # restart
-                    self._subprocesses[ident] = self._run_proc(ident)
+                    self._run_proc(ident)
                     logger.warning("Worker [%s] restarted", ident)
 
     async def aclose(self) -> None:
@@ -124,7 +122,3 @@ class Master:
         with anyio.CancelScope(shield=True):
             for proc in self._subprocesses.values():
                 await anyio.to_thread.run_sync(self._stop_proc, proc)
-
-            if self._presence is not None:
-                await self._presence.aclose()
-                self._presence = None

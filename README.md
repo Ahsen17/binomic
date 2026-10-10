@@ -92,7 +92,6 @@ autodiscover("myapp")
 
 factory = BinomicFactory(
     broker_dsn="redis://localhost:6379/0",
-    redis_dsn="redis://localhost:6379/1",
     module_name="myapp",
     config=BinomicConfig(queues=["default"], workers=2, concurrency=5),
 )
@@ -121,7 +120,6 @@ app = Litestar(
         BinomicPlugin(
             app_name="myapp",
             broker_dsn="redis://localhost:6379/0",
-            redis_dsn="redis://localhost:6379/1",
             config=BinomicConfig(queues=["default"]),
         )
     ],
@@ -133,7 +131,7 @@ app = Litestar(
 ## 架构
 
 ```mermaid
-flowchart LR
+flowchart TD
     P[生产者<br>Binomic 客户端] -->|submit：direct| B[AsyncredisBroker<br>Redis Streams]
     P -->|submit：delay| S[TaskScheduler]
     P -.->|启动时注册：cron / interval| S
@@ -141,9 +139,10 @@ flowchart LR
     B -->|consumer group / PEL| W1[Worker 0<br>子进程]
     B -->|consumer group / PEL| W2[Worker 1<br>子进程]
     W1 -.->|失败或超时：退避后重投<br>attempt + 1| B
-    M[Master<br>监督进程] --> W1
-    M --> W2
-    M -->|presence 心跳| R[(Redis)]
+    M[Master<br>监督进程] -->|判死则重启| W1
+    M -->|判死则重启| W2
+    W1 -.->|presence 心跳：IPC| M
+    W2 -.->|presence 心跳：IPC| M
 ```
 
 - **Producer**：`Binomic.submit` 经 `BrokerFactory` 按 broker DSN 协议创建代理并
@@ -154,9 +153,31 @@ flowchart LR
   `TaskScheduler`，承担失败重投的退避延时。
 - **Broker**：`AsyncredisBroker` 将消息写入 Redis Streams，Worker 侧以消费者组
   读取；失联消费者的 PEL 消息由 `reclaim`（`xautoclaim`）回收重投，重投时 `attempt + 1`。
-- **Master / Worker**：Master 以 multiprocessing 拉起 Worker 子进程并监督其存活；
+- **Master / Worker**：Master 以 multiprocessing 拉起 Worker 子进程并监督其存活。
+  心跳走**进程间 IPC**（每个 worker 一个共享 `multiprocessing.Value`，由 Master 创建、
+  随子进程构造传入），不经 Redis —— 因此 `is_alive()` 之外还能识别「进程活着但已停跳」；
+  Master 按 `heartbeat_interval` 的倍数轮询判死，命中即终止并重建同名 worker。
   Worker 在进程内通过 `anyio` 以配置并发执行任务。任务成功后 `ack`；失败或超时则**退避后**
   在 `max_attempts` 之内重投，超出后记日志丢弃；任务被取消时**不 ack**，消息留给 `reclaim`。
+
+## 路线图
+
+以下是当前已知缺口与迭代规划，按优先级排列，勾选即完成；已落地的能力以
+[CHANGELOG.md](CHANGELOG.md) 为准。
+
+- [ ] **P0 · 消息持久性** —— 失败重投改为「重投确认后再 ack」并持久化延时作业，
+  消除退避窗口内进程退出导致的静默丢失；`delay` 模式的提交同样需要脱离客户端进程内存
+- [ ] **P0 · 存储有界** —— 为 stream 增加修剪策略（`xadd` 的 `maxlen` 或 ack 时清理
+  条目），避免 Redis 内存随历史消息无界增长
+- [ ] **P1 · 配置开放** —— 将 `task_timeout` / `heartbeat_interval` /
+  `reclaim_interval` / `read_count` / `poll_interval` 提升为 `BinomicConfig` 字段
+  （当前为内部硬编码默认值）
+- [ ] **P1 · 死信队列** —— 超出 `max_attempts` 的消息与不可解析的 payload 进入 DLQ，
+  可检查、可重放（代码中已有三处 `TODO` 标记）
+- [ ] **P2 · 多实例** —— consumer 名唯一化（如实例前缀），支持同一 Redis 库上并存
+  多个客户端实例
+- [ ] **P2 · 可观测性** —— 提供 metrics 挂钩（队列深度、滞留消息、worker 重启计数等），
+  弥补心跳转入进程内后失去的外部观测面
 
 ## 开发
 

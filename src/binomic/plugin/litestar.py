@@ -32,13 +32,11 @@ class BinomicPlugin(InitPluginProtocol):
         self,
         app_name: str,
         broker_dsn: str,
-        redis_dsn: str,
         config: "BinomicConfig",
     ) -> None:
 
         self._app_name = app_name
         self._broker_dsn = broker_dsn
-        self._redis_dsn = redis_dsn
         self._config = config
 
     def on_app_init(self, app_config: "AppConfig") -> "AppConfig":
@@ -81,7 +79,6 @@ class BinomicPlugin(InitPluginProtocol):
         if self._binomic_factory_state_key not in state:
             need_setup[self._binomic_factory_state_key] = BinomicFactory(
                 broker_dsn=self._broker_dsn,
-                redis_dsn=self._redis_dsn,
                 module_name=self._app_name,
                 config=self._config,
             )

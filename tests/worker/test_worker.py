@@ -2,6 +2,8 @@ import logging
 import sys
 import time
 from collections.abc import AsyncIterator, Callable
+from itertools import count
+from typing import TYPE_CHECKING
 
 import anyio
 import anyio.lowlevel
@@ -14,6 +16,9 @@ from binomic.task import TaskScheduler
 from binomic.task.registry import TaskRegistry, TaskSpec, registry
 from binomic.worker import Worker, WorkerPolicy
 from binomic.worker.worker import logger as worker_logger
+
+if TYPE_CHECKING:
+    from multiprocessing.sharedctypes import Synchronized
 
 
 @pytest.fixture
@@ -453,7 +458,6 @@ class TestWorkerLifecycle:
 
         worker = make_worker(module_name="binomic")
         worker._broker = broker
-        worker._presence = mocker.AsyncMock()
 
         discover.assert_not_called()
 
@@ -477,7 +481,6 @@ class TestWorkerLifecycle:
 
         worker = make_worker()
         worker._broker = broker
-        worker._presence = mocker.AsyncMock()
 
         async with anyio.create_task_group() as tasks:
             tasks.start_soon(worker.arun)
@@ -534,15 +537,31 @@ class TestWorkerLifecycle:
 
         assert timers.cancel_scope.cancel.call_count == 1
 
-    async def test_aclose_closes_presence(
-        self, make_worker: Callable[..., Worker], mocker: MockerFixture
+
+class TestWorkerHeartbeat:
+    async def test_heartbeat_stamps_the_cell_repeatedly(
+        self,
+        make_worker: Callable[..., Worker],
+        heartbeat: "Synchronized[float]",
+        mocker: MockerFixture,
     ) -> None:
 
-        worker = make_worker()
-        presence = mocker.AsyncMock()
-        worker._presence = presence
+        clock = count(1)
+        mocker.patch(
+            "binomic.worker.presence.time.time", side_effect=lambda: float(next(clock))
+        )
 
-        await worker.aclose()
+        worker = make_worker(
+            policy=WorkerPolicy(
+                queues=["default"], concurrency=2, heartbeat_interval=0.01
+            )
+        )
+        terminate = anyio.Event()
 
-        presence.aclose.assert_awaited_once()
-        assert worker._presence is None
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(worker._heartbeat, terminate)
+            await anyio.sleep(0.1)
+            terminate.set()
+
+        # Many intervals elapsed: the loop stamped the cell every one of them.
+        assert heartbeat.value >= 2.0

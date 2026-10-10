@@ -4,7 +4,6 @@ from multiprocessing.context import SpawnProcess
 from typing import TYPE_CHECKING
 
 import anyio
-from redis.asyncio import Redis as AsyncRedis
 
 from binomic.base import DeserializationError
 from binomic.broker import BrokerFactory, Entry
@@ -40,23 +39,23 @@ class Worker(SpawnProcess):
         self,
         *,
         broker_dsn: str,
-        redis_dsn: str,
         module_name: str,
         consumer: str,
         policy: "WorkerPolicy",
+        presence: SubprocessPresence,
     ) -> None:
 
         super().__init__(name=consumer)
 
         self._broker_dsn = broker_dsn
-        self._redis_dsn = redis_dsn
         self._module_name = module_name
         self._consumer = consumer
         self._policy = policy
 
         self._broker: Broker | None = None
 
-        self._presence: SubprocessPresence | None = None
+        # Owned by the master, which frees it: the worker only writes to it.
+        self._presence = presence
         self._timers: TaskGroup | None = None
 
         # A spawned child only receives picklable data, so the AnyIO primitives
@@ -124,13 +123,8 @@ class Worker(SpawnProcess):
 
     async def _heartbeat(self, terminate: "anyio.Event") -> None:
 
-        if self._presence is None:
-            self._presence = SubprocessPresence(
-                AsyncRedis.from_url(self._redis_dsn, decode_responses=True),
-            )
-
         while not terminate.is_set():
-            await self._presence.heartbeat(self._consumer)
+            self._presence.heartbeat()
             logger.info(f"Worker [{self._consumer}] tiktoking: {time.time()}")  # noqa: G004
 
             await anyio.sleep(self._policy.heartbeat_interval)
@@ -245,10 +239,6 @@ class Worker(SpawnProcess):
         if self._timers and not self._timers.cancel_scope.cancel_called:
             self._timers.cancel_scope.cancel()
             self._timers = None
-
-        if self._presence is not None:
-            await self._presence.aclose()
-            self._presence = None
 
         if self._scheduler is not None:
             self._scheduler.shutdown()

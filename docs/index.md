@@ -16,7 +16,8 @@ Master 进程负责监督与故障回收。消息体采用
 - **失败重试**：失败或超时的消息按 `max_attempts`（默认 3）退避重投，
   详见[可靠性](guide/reliability.md)
 - **多进程 Worker**：Master 以 multiprocessing 启动多个 Worker 子进程，并携
-  presence 心跳持续监督
+  presence 心跳持续监督 —— 心跳走**进程间 IPC**（不经 Redis），因而在
+  `is_alive()` 之外还能识别「进程活着但已停跳」
 - **类型安全**：全量 mypy strict 与 ruff 检查，任务注册表基于泛型 `TaskSpec[P, T]`
 - **Litestar 集成**：内置 `BinomicPlugin`，将 Binomic 客户端注入 Litestar 依赖
 

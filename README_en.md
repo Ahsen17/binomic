@@ -98,7 +98,6 @@ autodiscover("myapp")
 
 factory = BinomicFactory(
     broker_dsn="redis://localhost:6379/0",
-    redis_dsn="redis://localhost:6379/1",
     module_name="myapp",
     config=BinomicConfig(queues=["default"], workers=2, concurrency=5),
 )
@@ -131,7 +130,6 @@ app = Litestar(
         BinomicPlugin(
             app_name="myapp",
             broker_dsn="redis://localhost:6379/0",
-            redis_dsn="redis://localhost:6379/1",
             config=BinomicConfig(queues=["default"]),
         )
     ],
@@ -144,7 +142,7 @@ parameter.
 ## Architecture
 
 ```mermaid
-flowchart LR
+flowchart TD
     P[Producer<br>Binomic client] -->|submit: direct| B[AsyncredisBroker<br>Redis Streams]
     P -->|submit: delay| S[TaskScheduler]
     P -.->|registered at startup: cron / interval| S
@@ -152,9 +150,10 @@ flowchart LR
     B -->|consumer group / PEL| W1[Worker 0<br>subprocess]
     B -->|consumer group / PEL| W2[Worker 1<br>subprocess]
     W1 -.->|failure or timeout:<br>redeliver after a backoff, attempt + 1| B
-    M[Master<br>supervisor] --> W1
-    M --> W2
-    M -->|presence heartbeat| R[(Redis)]
+    M[Master<br>supervisor] -->|restart when dead| W1
+    M -->|restart when dead| W2
+    W1 -.->|presence heartbeat: IPC| M
+    W2 -.->|presence heartbeat: IPC| M
 ```
 
 - **Producer**: `Binomic.submit` creates a broker via `BrokerFactory` based on
@@ -170,11 +169,41 @@ flowchart LR
   them through a consumer group, and messages stranded in a dead consumer's
   PEL are redelivered via `reclaim` (`xautoclaim`), which bumps `attempt`.
 - **Master / Worker**: the master spawns worker subprocesses through
-  multiprocessing and supervises their liveness; each worker executes tasks
-  concurrently within its process via `anyio`. A task that succeeds is `ack`ed;
-  one that fails or overruns is redelivered **after a backoff** while
-  `max_attempts` lasts and dropped after that; a cancelled task is **not**
-  `ack`ed, leaving its message to `reclaim`.
+  multiprocessing and supervises their liveness. The heartbeat goes over
+  **inter-process IPC** (one shared `multiprocessing.Value` per worker, created
+  by the master and handed to the child through its constructor) rather than
+  through Redis -- so beyond `is_alive()` it can still recognise a process that
+  is up but has stopped beating; the master polls at a multiple of
+  `heartbeat_interval` and terminates and rebuilds a worker the moment it is
+  judged dead. Each worker executes tasks concurrently within its process via
+  `anyio`. A task that succeeds is `ack`ed; one that fails or overruns is
+  redelivered **after a backoff** while `max_attempts` lasts and dropped after
+  that; a cancelled task is **not** `ack`ed, leaving its message to `reclaim`.
+
+## Roadmap
+
+The list below tracks the known gaps and the planned iteration order; a
+checked box means done. For what has landed, see
+[CHANGELOG.md](CHANGELOG.md).
+
+- [ ] **P0 · Message durability** -- ack a failed message only once its retry
+  has landed, and persist deferred jobs, so a process exit inside the backoff
+  window can no longer drop it silently; `delay`-mode submissions need the same
+  treatment -- they currently live in the client process's memory
+- [ ] **P0 · Bounded storage** -- give the streams a trimming policy (`xadd`
+  `maxlen` or cleanup on ack) so Redis memory does not grow without bound with
+  message history
+- [ ] **P1 · Configuration** -- promote `task_timeout` / `heartbeat_interval` /
+  `reclaim_interval` / `read_count` / `poll_interval` to `BinomicConfig` fields
+  (they are hard-coded internal defaults today)
+- [ ] **P1 · Dead-letter queue** -- route messages past `max_attempts` and with
+  unparseable payloads into a DLQ that can be inspected and replayed (three
+  `TODO` markers in the code)
+- [ ] **P2 · Multi-instance** -- make consumer names unique (e.g. an instance
+  prefix) so several client instances can share one Redis database
+- [ ] **P2 · Observability** -- expose metrics hooks (queue depth, stranded
+  messages, worker restarts, ...), covering the external visibility lost when
+  the heartbeat moved in-process
 
 ## Development
 

@@ -1,12 +1,17 @@
 """Fixtures scoped to worker-module tests."""
 
 from collections.abc import AsyncIterator, Callable
-from typing import Any
+from multiprocessing import get_context
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from binomic.task import TaskScheduler
 from binomic.worker import Master, MasterPolicy, Worker, WorkerPolicy
+from binomic.worker.presence import SubprocessPresence
+
+if TYPE_CHECKING:
+    from multiprocessing.sharedctypes import Synchronized
 
 
 @pytest.fixture
@@ -22,6 +27,26 @@ def master_policy(worker_policy: WorkerPolicy) -> MasterPolicy:
 
 
 @pytest.fixture
+def make_heartbeat() -> Callable[[], "Synchronized[float]"]:
+    """Build heartbeat cells, the way the master builds one per worker."""
+
+    def _make() -> "Synchronized[float]":
+
+        return get_context("spawn").Value("d", 0.0)
+
+    return _make
+
+
+@pytest.fixture
+def heartbeat(
+    make_heartbeat: Callable[[], "Synchronized[float]"],
+) -> "Synchronized[float]":
+    """A single heartbeat cell, for tests that need only one."""
+
+    return make_heartbeat()
+
+
+@pytest.fixture
 def make_master(master_policy: MasterPolicy) -> Callable[..., Master]:
     """Build a Master without starting any worker."""
 
@@ -29,7 +54,6 @@ def make_master(master_policy: MasterPolicy) -> Callable[..., Master]:
 
         fields: dict[str, Any] = {
             "broker_dsn": "redis://localhost:6379/0",
-            "redis_dsn": "redis://localhost:6379/0",
             "module_name": "binomic",
             "policy": master_policy,
         }
@@ -41,17 +65,19 @@ def make_master(master_policy: MasterPolicy) -> Callable[..., Master]:
 
 
 @pytest.fixture
-def make_worker(worker_policy: WorkerPolicy) -> Callable[..., Worker]:
+def make_worker(
+    worker_policy: WorkerPolicy, heartbeat: "Synchronized[float]"
+) -> Callable[..., Worker]:
     """Build a Worker without starting the subprocess."""
 
     def _make(**overrides: Any) -> Worker:
 
         fields: dict[str, Any] = {
             "broker_dsn": "redis://localhost:6379/0",
-            "redis_dsn": "redis://localhost:6379/0",
             "module_name": "binomic_no_such_pkg",
             "consumer": "test-worker",
             "policy": worker_policy,
+            "presence": SubprocessPresence(heartbeat),
         }
         fields.update(overrides)
 

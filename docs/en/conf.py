@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).parents[2] / "src"))
 
 project = "Binomic"
 author = "Ahsen17"
-release = "0.1.2"
+release = "0.1.3"
 
 # Root URL of the published site, set by the Pages workflow so that
 # cross-language links and Open Graph URLs stay absolute under the

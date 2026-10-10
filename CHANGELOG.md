@@ -1,3 +1,19 @@
+## [0.1.3] - 2026-10-10
+
+### 🐛 Bug Fixes
+
+- Litestar plugin lack lifespan
+
+### 🚜 Refactor
+
+- Switch logging engine to structlog
+
+
+### 🧪 Testing
+
+- Route structlog through stdlib logging so caplog captures records
+
+
 ## [0.1.2] - 2026-10-10
 
 ### 🚀 Features
@@ -8,9 +24,6 @@
 ### 🐛 Bug Fixes
 
 - Fail task mode arg
-- Type-check error
-- Type-check error
-- Type-check error
 
 ### 🚜 Refactor
 
@@ -42,7 +55,6 @@
 
 - Capitalize the author name in project metadata
 - Add the 0.1.1 changelog entry
-
 ## [0.1.1] - 2026-10-08
 
 ### 🚀 Features

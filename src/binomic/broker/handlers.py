@@ -15,12 +15,10 @@ class BrokerFactory:
         self,
         dsn: str,
         queues: list[str],
-        queue_capacity: int = 1000,
     ) -> None:
 
         self._dsn = dsn
         self._queues = queues
-        self._queue_capacity = queue_capacity
 
     def create(self) -> "Broker":
 
@@ -29,7 +27,6 @@ class BrokerFactory:
                 return AsyncredisBroker(
                     dsn=self._dsn,
                     queues=self._queues,
-                    queue_capacity=self._queue_capacity,
                     decode_responses=True,
                 )
 

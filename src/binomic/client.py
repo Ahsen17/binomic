@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Self
 import anyio
 from anyio import AsyncContextManagerMixin
 
-from binomic.broker import Broker, BrokerFactory, QueueCapacityLimitError
+from binomic.broker import Broker, BrokerFactory
 from binomic.message import Message
 from binomic.task import TaskScheduler, autodiscover
 from binomic.task.registry import registry
@@ -56,7 +56,6 @@ class Binomic(AsyncContextManagerMixin):
                 self._broker = BrokerFactory(
                     self._broker_dsn,
                     self._config.queues,
-                    self._config.queue_capacity,
                 ).create()
                 await self._broker.initialize()
 
@@ -86,11 +85,7 @@ class Binomic(AsyncContextManagerMixin):
         if self._broker is None:
             raise RuntimeError("Run client `arun` before submitting messages.")
 
-        try:
-            await self._broker.enqueue(queue, msg)
-
-        except QueueCapacityLimitError:
-            logger.error("Queue capacity limit exceeded, message dropped.")
+        await self._broker.enqueue(queue, msg)
 
     async def submit(self, msg: "Message") -> "UUID":
         """Dispatch a message to its task.

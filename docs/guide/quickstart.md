@@ -58,7 +58,6 @@ autodiscover("myapp")
 
 factory = BinomicFactory(
     broker_dsn="redis://localhost:6379/0",
-    redis_dsn="redis://localhost:6379/1",
     module_name="myapp",
     config=BinomicConfig(queues=["default"], workers=2, concurrency=5),
 )
@@ -70,8 +69,8 @@ async with binomic:
     await binomic.submit(Message(name="example", args=[1]))
 ```
 
-- `broker_dsn` 指向用于投递消息的 Redis Streams；
-- `redis_dsn` 指向用于 presence 心跳与监督协调的 Redis；
+- `broker_dsn` 是**唯一**需要提供的 Redis 连接：消息投递与消费都走它指向的
+  Redis Streams；Master 对 Worker 的存活监督走进程间 IPC，不需要 Redis；
 - `BinomicConfig` 中 `workers` 是 Master 拉起的 Worker 子进程数量，
   `concurrency` 是每个 Worker 并发执行的任务数，`max_attempts` 是单条消息的最大尝试
   次数 —— 其语义见[可靠性](reliability.md)；

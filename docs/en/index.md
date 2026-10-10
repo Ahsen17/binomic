@@ -18,7 +18,9 @@ fleet with a master process. Message payloads are JSON-serialized with
 - **Retries**: failed or overdue messages are redelivered after a backoff, up to
   `max_attempts` (3 by default); see [Reliability](guide/reliability.md)
 - **Multiprocessing workers**: the master spawns worker subprocesses and keeps
-  supervising them with presence heartbeats
+  supervising them with presence heartbeats -- carried over **inter-process
+  IPC** rather than Redis, so beyond `is_alive()` it also sees a process that is
+  up but has stopped beating
 - **Type safe**: fully checked with mypy strict and ruff; the task registry is
   built on the generic `TaskSpec[P, T]`
 - **Litestar integration**: a built-in `BinomicPlugin` injects the Binomic

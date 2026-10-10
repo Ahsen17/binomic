@@ -13,7 +13,6 @@ app = Litestar(
         BinomicPlugin(
             app_name="myapp",
             broker_dsn="redis://localhost:6379/0",
-            redis_dsn="redis://localhost:6379/1",
             config=BinomicConfig(queues=["default"]),
         )
     ],

@@ -63,7 +63,6 @@ autodiscover("myapp")
 
 factory = BinomicFactory(
     broker_dsn="redis://localhost:6379/0",
-    redis_dsn="redis://localhost:6379/1",
     module_name="myapp",
     config=BinomicConfig(queues=["default"], workers=2, concurrency=5),
 )
@@ -76,9 +75,9 @@ async with binomic:
     await binomic.submit(Message(name="example", args=[1]))
 ```
 
-- `broker_dsn` points at the Redis used for message delivery (Streams);
-- `redis_dsn` points at the Redis used for presence heartbeats and
-  supervision coordination;
+- `broker_dsn` is the **only** Redis connection you supply: both delivery and
+  consumption go through the Redis Streams it points at, while the master's
+  liveness supervision of workers goes over inter-process IPC and needs no Redis;
 - in `BinomicConfig`, `workers` is the number of worker subprocesses the
   master spawns, `concurrency` is the number of tasks each worker runs
   concurrently, and `max_attempts` is the attempt budget for a single message —

@@ -1,3 +1,48 @@
+## [0.1.2] - 2026-10-10
+
+### 🚀 Features
+
+- Retry failed messages and cap queue capacity
+- Defer failed redeliveries by a backoff
+
+### 🐛 Bug Fixes
+
+- Fail task mode arg
+- Type-check error
+- Type-check error
+- Type-check error
+
+### 🚜 Refactor
+
+- Drop the queue capacity limit
+- [**breaking**] Carry presence heartbeats over ipc
+
+### 📚 Documentation
+
+- Align the documented release with the package version
+- Add task mode and scheduling documentation
+- Correct stale examples in the quick start
+- Describe the scheduler and per-mode submission in the architecture
+- Correct the examples and architecture in the READMEs
+- Correct docstrings rendered by autodoc
+- Document retries, queue capacity and the enqueued_at move
+- Describe the backoff and the disabled capacity limit
+- Remove the queue capacity limit description
+- Describe the ipc presence heartbeat and drop redis_dsn
+- Add a roadmap of the known gaps
+
+### 🧪 Testing
+
+- Cover the capacity limit, bounded retries and the enqueued_at move
+- Follow the deferred redelivery in the worker cases
+- Drop the queue capacity limit tests
+- Rework the presence suite for the ipc heartbeat
+
+### ⚙️ Miscellaneous Tasks
+
+- Capitalize the author name in project metadata
+- Add the 0.1.1 changelog entry
+
 ## [0.1.1] - 2026-10-08
 
 ### 🚀 Features
@@ -36,7 +81,6 @@
 ### ⚙️ Miscellaneous Tasks
 
 - Upgrade to version 0.1.1
-
 ## [0.1.0] - 2026-10-06
 
 ### 🚀 Features

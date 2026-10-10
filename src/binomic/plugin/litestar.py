@@ -1,3 +1,5 @@
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, ClassVar, cast
 
 from binomic.client import Binomic, BinomicFactory
@@ -11,6 +13,7 @@ try:
     from litestar.plugins import InitPluginProtocol
 
     if TYPE_CHECKING:
+        from litestar import Litestar
         from litestar.config.app import AppConfig
         from litestar.datastructures import State
 
@@ -44,6 +47,7 @@ class BinomicPlugin(InitPluginProtocol):
         self.setup_signature_namespaces(app_config)
         self.setup_states(app_config)
         self.setup_dependencies(app_config)
+        self.setup_lifespan(app_config)
 
         return app_config
 
@@ -61,6 +65,18 @@ class BinomicPlugin(InitPluginProtocol):
             )
 
         return factory.create()
+
+    @asynccontextmanager
+    async def __lifespan__(self, app: "Litestar") -> AsyncGenerator[None, None]:
+
+        binomic = self.provide_binomic(app.state)
+
+        try:
+            async with binomic:
+                yield
+
+        finally:
+            await binomic.aclose()
 
     def setup_signature_namespaces(self, app_config: "AppConfig") -> None:
 
@@ -95,3 +111,7 @@ class BinomicPlugin(InitPluginProtocol):
                 )
             }
         )
+
+    def setup_lifespan(self, app_config: "AppConfig") -> None:
+
+        app_config.lifespan.append(self.__lifespan__)

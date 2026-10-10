@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator, Callable, Iterator
 from typing import Any
 
 import pytest
+import structlog
 from fakeredis import FakeAsyncRedis, FakeServer
 
 from binomic.broker import AsyncredisBroker
@@ -11,6 +12,23 @@ from binomic.message import Message
 from binomic.task.registry import TaskRegistry, registry
 
 __all__ = ()
+
+
+@pytest.fixture(autouse=True, scope="session")
+def structlog_stdlib() -> Iterator[None]:
+    """Route structlog through stdlib logging so ``caplog`` captures records.
+
+    ``src/`` logs via ``structlog.stdlib.get_logger``, which without
+    configuration prints straight to stdout, where caplog cannot see it.
+    Recreating the stdlib defaults sends those calls through stdlib logging
+    instead; ``log_level=None`` leaves logging's own handlers — owned by
+    pytest — untouched.
+    """
+
+    saved = structlog.get_config()
+    structlog.stdlib.recreate_defaults(log_level=None)
+    yield
+    structlog.configure(**saved)
 
 
 @pytest.fixture

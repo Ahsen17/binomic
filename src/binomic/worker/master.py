@@ -1,9 +1,9 @@
-import logging
 import time
 from multiprocessing import get_context
 from typing import TYPE_CHECKING, Final
 
 import anyio
+import structlog
 
 from .presence import MasterPresence, SubprocessPresence
 from .worker import Worker
@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 __all__ = ("Master",)
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.stdlib.get_logger(__name__)
 
 
 # How long a terminated worker is given to exit.

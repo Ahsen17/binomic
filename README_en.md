@@ -180,6 +180,31 @@ flowchart TD
   redelivered **after a backoff** while `max_attempts` lasts and dropped after
   that; a cancelled task is **not** `ack`ed, leaving its message to `reclaim`.
 
+## Roadmap
+
+The list below tracks the known gaps and the planned iteration order; a
+checked box means done. For what has landed, see
+[CHANGELOG.md](CHANGELOG.md).
+
+- [ ] **P0 · Message durability** -- ack a failed message only once its retry
+  has landed, and persist deferred jobs, so a process exit inside the backoff
+  window can no longer drop it silently; `delay`-mode submissions need the same
+  treatment -- they currently live in the client process's memory
+- [ ] **P0 · Bounded storage** -- give the streams a trimming policy (`xadd`
+  `maxlen` or cleanup on ack) so Redis memory does not grow without bound with
+  message history
+- [ ] **P1 · Configuration** -- promote `task_timeout` / `heartbeat_interval` /
+  `reclaim_interval` / `read_count` / `poll_interval` to `BinomicConfig` fields
+  (they are hard-coded internal defaults today)
+- [ ] **P1 · Dead-letter queue** -- route messages past `max_attempts` and with
+  unparseable payloads into a DLQ that can be inspected and replayed (three
+  `TODO` markers in the code)
+- [ ] **P2 · Multi-instance** -- make consumer names unique (e.g. an instance
+  prefix) so several client instances can share one Redis database
+- [ ] **P2 · Observability** -- expose metrics hooks (queue depth, stranded
+  messages, worker restarts, ...), covering the external visibility lost when
+  the heartbeat moved in-process
+
 ## Development
 
 ```bash

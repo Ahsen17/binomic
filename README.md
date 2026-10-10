@@ -160,6 +160,25 @@ flowchart TD
   Worker 在进程内通过 `anyio` 以配置并发执行任务。任务成功后 `ack`；失败或超时则**退避后**
   在 `max_attempts` 之内重投，超出后记日志丢弃；任务被取消时**不 ack**，消息留给 `reclaim`。
 
+## 路线图
+
+以下是当前已知缺口与迭代规划，按优先级排列，勾选即完成；已落地的能力以
+[CHANGELOG.md](CHANGELOG.md) 为准。
+
+- [ ] **P0 · 消息持久性** —— 失败重投改为「重投确认后再 ack」并持久化延时作业，
+  消除退避窗口内进程退出导致的静默丢失；`delay` 模式的提交同样需要脱离客户端进程内存
+- [ ] **P0 · 存储有界** —— 为 stream 增加修剪策略（`xadd` 的 `maxlen` 或 ack 时清理
+  条目），避免 Redis 内存随历史消息无界增长
+- [ ] **P1 · 配置开放** —— 将 `task_timeout` / `heartbeat_interval` /
+  `reclaim_interval` / `read_count` / `poll_interval` 提升为 `BinomicConfig` 字段
+  （当前为内部硬编码默认值）
+- [ ] **P1 · 死信队列** —— 超出 `max_attempts` 的消息与不可解析的 payload 进入 DLQ，
+  可检查、可重放（代码中已有三处 `TODO` 标记）
+- [ ] **P2 · 多实例** —— consumer 名唯一化（如实例前缀），支持同一 Redis 库上并存
+  多个客户端实例
+- [ ] **P2 · 可观测性** —— 提供 metrics 挂钩（队列深度、滞留消息、worker 重启计数等），
+  弥补心跳转入进程内后失去的外部观测面
+
 ## 开发
 
 ```bash

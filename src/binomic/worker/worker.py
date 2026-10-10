@@ -137,7 +137,7 @@ class Worker(SpawnProcess):
 
     def _backoff(self, attempt: int) -> float:
 
-        return min(1.5 * (2 ** (attempt - 1)), 30.0)
+        return float(min(1.5 * (2 ** (attempt - 1)), 30.0))
 
     async def _run(self, entry: "Entry") -> None:
 

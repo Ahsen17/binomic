@@ -73,9 +73,8 @@ async with binomic:
 - `broker_dsn` 指向用于投递消息的 Redis Streams；
 - `redis_dsn` 指向用于 presence 心跳与监督协调的 Redis；
 - `BinomicConfig` 中 `workers` 是 Master 拉起的 Worker 子进程数量，
-  `concurrency` 是每个 Worker 并发执行的任务数，`queue_capacity` 是每条队列的容量上限
-  （**当前未生效**），`max_attempts` 是单条消息的最大尝试次数 ——
-  后两项的语义见[可靠性](reliability.md)；
+  `concurrency` 是每个 Worker 并发执行的任务数，`max_attempts` 是单条消息的最大尝试
+  次数 —— 其语义见[可靠性](reliability.md)；
 - `Message` 的 `name` 是任务名，`args` / `kwargs` 承载调用参数（上例会以 `index=1`
   调用 `example`）。消息进到哪条 Stream 由**任务声明里的队列**决定，消息上不需要
   也不能指定队列；

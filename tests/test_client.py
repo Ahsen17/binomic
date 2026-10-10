@@ -1,4 +1,3 @@
-import logging
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
@@ -9,7 +8,7 @@ from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from pytest_mock import MockerFixture
 
-from binomic.broker import AsyncredisBroker, QueueCapacityLimitError
+from binomic.broker import AsyncredisBroker
 from binomic.client import Binomic, BinomicFactory
 from binomic.config import BinomicConfig
 from binomic.message import Message
@@ -291,7 +290,7 @@ class TestBinomic:
 
         assert await binomic.submit(msg) == msg.id
 
-        factory.assert_called_once_with("redis://localhost:6379/0", ["default"], 1000)
+        factory.assert_called_once_with("redis://localhost:6379/0", ["default"])
         broker.enqueue.assert_awaited_once_with("default", msg)
 
     async def test_submit_reuses_broker_instance(
@@ -312,28 +311,6 @@ class TestBinomic:
 
         factory.assert_called_once()
         assert broker.enqueue.await_count == 2
-
-    async def test_submit_drops_a_message_when_the_queue_is_full(
-        self,
-        binomic: Binomic,
-        noop_task: TaskSpec,
-        mocker: MockerFixture,
-        make_message: Callable[..., Message],
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-
-        broker = mocker.AsyncMock()
-        broker.enqueue.side_effect = QueueCapacityLimitError("full")
-        mocker.patch(
-            "binomic.client.BrokerFactory"
-        ).return_value.create.return_value = broker
-        await binomic.arun()
-        msg = make_message()
-
-        with caplog.at_level(logging.ERROR, logger="binomic.client"):
-            assert await binomic.submit(msg) == msg.id
-
-        assert any("capacity limit exceeded" in r.message for r in caplog.records)
 
 
 class TestBinomicClose:

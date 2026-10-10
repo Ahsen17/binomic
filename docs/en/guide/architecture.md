@@ -31,8 +31,7 @@ flowchart LR
 - **Broker**: `AsyncredisBroker` writes messages to Redis Streams; workers
   read them through a consumer group, and messages in the PEL of a lost
   consumer are reclaimed and redelivered by `reclaim` (`xautoclaim`), which
-  bumps `attempt`. The queue capacity limit (`queue_capacity`) is **not in
-  effect** — the check is short-circuited in the code (`# TODO`).
+  bumps `attempt`.
 - **Master / Worker**: the master spawns worker subprocesses through
   multiprocessing and supervises their liveness; each worker executes tasks
   concurrently with `anyio` inside its process. A task that succeeds is

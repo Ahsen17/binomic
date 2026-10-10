@@ -1,10 +1,9 @@
 # Reliability
 
-A message that has been sent out can fail to run, overrun its timeout, or fail to
-be enqueued at all. This page covers how Binomic handles the three cases:
-**retrying a failure**, **delivery back-pressure**, and the **dead letter queue
-(DLQ)** that is not implemented yet. See [Architecture](architecture.md) for
-where they sit in the pipeline.
+A message that has been sent out can fail to run or overrun its timeout. This
+page covers how Binomic handles the two cases: **retrying a failure**, and the
+**dead letter queue (DLQ)** that is not implemented yet. See
+[Architecture](architecture.md) for where they sit in the pipeline.
 
 ## Attempt count
 
@@ -65,48 +64,6 @@ outcome:
 **Cancellation does not ack**: when a worker shuts down or a task is cancelled,
 the message stays in the PEL instead of being acknowledged, leaving it for the
 next `reclaim` to redeliver to another consumer.
-
-## Delivery back-pressure: the queue capacity limit (not in effect)
-
-```{warning}
-This check is **switched off for now**: `AsyncredisBroker._outofcapacity` carries
-a `return False` marked `# TODO: there is a bug`, so `enqueue` never raises
-`QueueCapacityLimitError` and `queue_capacity` is currently a knob with no
-effect. This section describes what happens **once it is enabled**; why it was
-switched off is at the end.
-```
-
-`queue_capacity` (default `1000`) is **meant** to cap how much work a queue may
-hold. The limit is read from the consumer group's own bookkeeping — `pending`
-(delivered but unacknowledged) plus `lag` (not yet delivered) — and `enqueue`
-raises `QueueCapacityLimitError` once it is reached:
-
-```python
-from binomic.broker import QueueCapacityLimitError
-```
-
-Once enabled, what happens on a full queue depends on the caller:
-
-| Caller | When the queue is full |
-|-|-|
-| client delivery (`submit`) | the error is swallowed inside the client and logged: **`submit` raises nothing and still returns the message ID**, so the caller cannot tell from the return value that the message was dropped — and it is not retried |
-| worker redelivery (retry) | logged and dropped the same way, so that retry never happens |
-| `reclaim` redelivering a stranded message | logs a warning and leaves the message PENDING (no ack) for the next `reclaim` pass — back-pressure rather than failure |
-
-```{note}
-The limit is a *soft* one: the delivery side (the client, and the worker
-redelivering a failure) drops the message and logs it, and only `reclaim` keeps
-it for a later pass. The check reads the consumer group's bookkeeping, so the
-queue must have its consumer group created (that is, the broker initialized);
-with no group, there is no capacity limit.
-```
-
-**Why it was switched off**: the check reads the consumer group's bookkeeping,
-and `xinfo_groups` raises `no such key` while the stream key does not exist yet.
-`initialize()` only creates keys for the queues in the broker's configuration,
-so an `enqueue` aimed at a queue that is **not in that configuration** (a queue
-some task declares but `queues` never listed, say) took `enqueue` down with it.
-The check was short-circuited until that is fixed.
 
 ## Dead letter queue (not implemented)
 

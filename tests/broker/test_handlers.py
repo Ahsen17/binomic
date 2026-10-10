@@ -18,15 +18,6 @@ class TestBrokerFactory:
         assert isinstance(broker, AsyncredisBroker)
         assert broker._queues == ["a", "b"]
 
-    def test_passes_queue_capacity_to_broker(self) -> None:
-
-        broker = BrokerFactory(
-            "redis://localhost:6379/0", ["default"], queue_capacity=7
-        ).create()
-
-        assert isinstance(broker, AsyncredisBroker)
-        assert broker._queue_capacity == 7
-
     def test_amqp_dsn_is_not_implemented(self) -> None:
 
         with pytest.raises(NotImplementedError, match="AMQP"):

@@ -27,7 +27,6 @@ flowchart LR
   详见[任务模式与调度](scheduling.md)。
 - **Broker**：`AsyncredisBroker` 将消息写入 Redis Streams，Worker 侧以消费者组
   读取；失联消费者的 PEL 消息由 `reclaim`（`xautoclaim`）回收重投，重投时 `attempt + 1`。
-  队列容量上限（`queue_capacity`）**当前未生效** —— 判定在代码里被临时短路（`# TODO`）。
 - **Master / Worker**：Master 以 multiprocessing 拉起 Worker 子进程并监督其存活；
   Worker 在进程内通过 `anyio` 以配置并发执行任务。任务成功后 `ack`；失败或超时则**退避后**
   在 `max_attempts` 之内重投（退避经 Worker 自有的调度器延时投递），超出后记日志丢弃；

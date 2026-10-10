@@ -1,7 +1,7 @@
 # 可靠性
 
-一条消息投出去之后可能执行失败、超时，或者干脆投不进去。这一页说明三种情形的处置：
-**失败重试**、**投递背压**，以及尚未落地的**死信队列（DLQ）**。它们在链路中的位置见
+一条消息投出去之后可能执行失败或超时。这一页说明两类情形的处置：
+**失败重试**，以及尚未落地的**死信队列（DLQ）**。它们在链路中的位置见
 [架构](architecture.md)。
 
 ## 尝试次数
@@ -51,42 +51,6 @@ config = BinomicConfig(queues=["default"], max_attempts=3)
 
 **取消不 ack**：Worker 关闭或任务被取消时，消息**留在** PEL 里而不是被 ack，交给下一次
 `reclaim` 重投给其它消费者。
-
-## 投递背压：队列容量上限（当前未生效）
-
-```{warning}
-这条判定**目前被临时关掉了**：`AsyncredisBroker._outofcapacity` 里留着一行带
-`# TODO: there is a bug` 的 `return False`，因此 `enqueue` 永远不会抛
-`QueueCapacityLimitError`，`queue_capacity` 现在是个没有效果的配置项。本节描述的是它
-**启用后**的行为，关闭的原因见本节末尾。
-```
-
-`queue_capacity`（默认 `1000`）**本意**是给每条队列设一个容量上限。判定依据是消费者组
-自己的记账 —— `pending`（已投递未确认）加上 `lag`（尚未投递）—— 达到上限时 `enqueue`
-抛 `QueueCapacityLimitError`：
-
-```python
-from binomic.broker import QueueCapacityLimitError
-```
-
-启用后，不同调用路径对「队列已满」的处置并不相同：
-
-| 路径 | 队列已满时 |
-|-|-|
-| 客户端投递（`submit`） | 异常在客户端内部被吞掉并记日志：**`submit` 不抛错、仍返回消息 ID**，调用方无法从返回值判断消息是否被丢弃，也不会重试 |
-| Worker 重投（失败重试） | 同样记日志后丢弃 —— 该次重试不再发生 |
-| `reclaim` 重投滞留消息 | 记警告并**保留** PENDING（不 ack），下一轮 `reclaim` 再试 —— 视作背压而非失败 |
-
-```{note}
-容量是**软上限**：投递侧（客户端与 Worker 重投）在满时丢弃消息并记日志，只有 `reclaim`
-会把消息留到下一轮。容量判定读的是消费者组的记账，因此队列需先创建消费者组（即完成
-broker 初始化）；组不存在时视为没有容量上限。
-```
-
-**为什么被关掉**：判定读的是消费者组的记账，而 `xinfo_groups` 在 Stream 键还不存在时会抛
-`no such key`。`initialize()` 只为 broker 配置里的队列建键，所以 `enqueue` 一旦投到一个
-**未列入配置**的队列（例如某个任务声明的队列不在 `queues` 里），就会连带崩掉。
-先短路判定、等这处修好再启用。
 
 ## 死信队列（尚未实现）
 

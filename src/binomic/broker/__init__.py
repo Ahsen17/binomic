@@ -1,4 +1,3 @@
-from .exceptions import QueueCapacityLimitError
 from .handlers import BrokerFactory
 from .protocols import Broker
 from .redis import AsyncredisBroker
@@ -9,5 +8,4 @@ __all__ = (
     "Broker",
     "BrokerFactory",
     "Entry",
-    "QueueCapacityLimitError",
 )

@@ -15,7 +15,6 @@ from binomic.message import Message
 from binomic.task import TaskScheduler
 from binomic.task.registry import TaskRegistry, TaskSpec, registry
 from binomic.worker import Worker, WorkerPolicy
-from binomic.worker.worker import logger as worker_logger
 
 if TYPE_CHECKING:
     from multiprocessing.sharedctypes import Synchronized
@@ -120,7 +119,7 @@ class TestWorkerRun:
         # The stamp rides on the entry now, so age the entry itself.
         entry.fields["enqueued_at"] = time.time() - 7200
 
-        with caplog.at_level(logging.WARNING, logger=worker_logger.name):
+        with caplog.at_level(logging.WARNING, logger="binomic.worker.worker"):
             await worker._run(entry)
 
         assert tracked == []
@@ -164,7 +163,7 @@ class TestWorkerRun:
         await worker_broker.enqueue("default", make_message(name="ghost-task"))
         entry = (await worker_broker.acquire("test-worker", count=1))[0]
 
-        with caplog.at_level(logging.ERROR, logger=worker_logger.name):
+        with caplog.at_level(logging.ERROR, logger="binomic.worker.worker"):
             await worker._run(entry)
 
         assert any("Failed to process" in r.message for r in caplog.records)
@@ -190,7 +189,7 @@ class TestWorkerRun:
         )
         entry = (await worker_broker.acquire("test-worker", count=1))[0]
 
-        with caplog.at_level(logging.ERROR, logger=worker_logger.name):
+        with caplog.at_level(logging.ERROR, logger="binomic.worker.worker"):
             await worker._run(entry)
 
         assert any("Failed to deserialize" in r.message for r in caplog.records)
@@ -223,7 +222,7 @@ class TestWorkerRun:
         await worker_broker.enqueue("default", msg)
         entry = (await worker_broker.acquire("test-worker", count=1))[0]
 
-        with caplog.at_level(logging.ERROR, logger=worker_logger.name):
+        with caplog.at_level(logging.ERROR, logger="binomic.worker.worker"):
             await worker._run(entry)
 
         # A timeout is an invocation failure like any other: logged, then handed
@@ -258,7 +257,7 @@ class TestWorkerRun:
         await worker_broker.enqueue("default", make_message(name="boom"))
         entry = (await worker_broker.acquire("test-worker", count=1))[0]
 
-        with caplog.at_level(logging.ERROR, logger=worker_logger.name):
+        with caplog.at_level(logging.ERROR, logger="binomic.worker.worker"):
             await worker._run(entry)
 
         assert any("Failed to process" in r.message for r in caplog.records)
@@ -329,7 +328,7 @@ class TestWorkerRun:
         await worker_broker.enqueue("default", make_message(name="boom", attempt=3))
         entry = (await worker_broker.acquire("test-worker", count=1))[0]
 
-        with caplog.at_level(logging.WARNING, logger=worker_logger.name):
+        with caplog.at_level(logging.WARNING, logger="binomic.worker.worker"):
             await worker._run(entry)
 
         assert any("max attempts reached" in r.message for r in caplog.records)

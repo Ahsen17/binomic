@@ -57,20 +57,23 @@ class Binomic(AsyncContextManagerMixin):
 
         Raises:
             TaskNotFoundError: if no task is registered under the message's name.
-            RuntimeError: if the client has not been started with ``arun``.
+            RuntimeError: if the client context has not been entered.
             ValueError: if the task's mode is neither ``direct`` nor ``delay``.
         """
 
         spec = registry.get(msg.name)
 
-        if self._broker is None:
-            raise RuntimeError("Broker not initialized.")
-
         match spec.mode:
             case "direct":
+                if self._broker is None:
+                    raise RuntimeError("Broker not initialized.")
+
                 await self._broker.enqueue(spec.queue, msg)
 
             case "delay":
+                if self._broker is None:
+                    raise RuntimeError("Broker not initialized.")
+
                 if self._scheduler is None:
                     raise RuntimeError("Scheduler not initialized.")
 
@@ -90,16 +93,17 @@ class Binomic(AsyncContextManagerMixin):
 
     def _register_interval_cron_tasks(self) -> None:
 
-        if self._scheduler is None:
-            raise RuntimeError("Run client `arun` before registering scheduled tasks.")
+        if self._scheduler is None or self._broker is None:
+            raise RuntimeError("Client context not entered.")
 
         scheduler = self._scheduler
+        broker = self._broker
 
         for spec in registry:
             match spec.mode:
                 case "interval":
                     scheduler.interval(
-                        func=self._broker.enqueue,
+                        func=broker.enqueue,
                         spec=spec,
                         args=(spec.queue, Message(name=spec.name)),
                     )
@@ -108,7 +112,7 @@ class Binomic(AsyncContextManagerMixin):
 
                 case "cron":
                     scheduler.cron(
-                        func=self._broker.enqueue,
+                        func=broker.enqueue,
                         spec=spec,
                         args=(spec.queue, Message(name=spec.name)),
                     )
@@ -161,15 +165,18 @@ class Binomic(AsyncContextManagerMixin):
                 tg.cancel_scope.cancel()
 
         finally:
-            await master.aclose()
+            # A failing master teardown must not skip the client's own.
+            try:
+                await master.aclose()
 
-            if self._scheduler is not None:
-                self._scheduler.shutdown()
-                self._scheduler = None
+            finally:
+                if self._scheduler is not None:
+                    self._scheduler.shutdown()
+                    self._scheduler = None
 
-            if self._broker is not None:
-                await self._broker.aclose()
-                self._broker = None
+                if self._broker is not None:
+                    await self._broker.aclose()
+                    self._broker = None
 
 
 class BinomicFactory:

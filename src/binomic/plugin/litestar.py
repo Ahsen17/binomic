@@ -71,12 +71,8 @@ class BinomicPlugin(InitPluginProtocol):
 
         binomic = self.provide_binomic(app.state)
 
-        try:
-            async with binomic:
-                yield
-
-        finally:
-            await binomic.aclose()
+        async with binomic:
+            yield
 
     def setup_signature_namespaces(self, app_config: "AppConfig") -> None:
 

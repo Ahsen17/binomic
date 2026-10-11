@@ -9,8 +9,8 @@ from redis.exceptions import ResponseError
 
 from binomic.base import DeserializationError
 from binomic.base.constants import APP_NAME
-from binomic.message import Message
 
+from .message import Message
 from .protocols import Broker
 from .types import Entry
 

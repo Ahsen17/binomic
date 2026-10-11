@@ -6,8 +6,7 @@ import anyio
 import structlog
 
 from binomic.base import DeserializationError
-from binomic.broker import BrokerFactory, Entry
-from binomic.message import Message
+from binomic.broker import BrokerFactory, Entry, Message
 from binomic.task import TaskNotFoundError, autodiscover
 from binomic.task.registry import registry
 from binomic.task.scheduler import TaskScheduler

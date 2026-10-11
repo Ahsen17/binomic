@@ -6,8 +6,7 @@ import anyio
 import structlog
 from anyio import AsyncContextManagerMixin
 
-from binomic.broker import Broker, BrokerFactory
-from binomic.message import Message
+from binomic.broker import Broker, BrokerFactory, Message
 from binomic.task import TaskScheduler, autodiscover
 from binomic.task.registry import registry
 from binomic.worker import Master, MasterPolicy, WorkerPolicy

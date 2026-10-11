@@ -14,7 +14,10 @@ class BaseStruct(Struct):
         """Convert the data structure to a JSON string."""
 
         try:
-            return json.encode(self).decode("utf-8")
+            return json.encode(
+                self,
+                order="sorted",
+            ).decode("utf-8")
 
         except Exception as exc:
             raise SerializationError(

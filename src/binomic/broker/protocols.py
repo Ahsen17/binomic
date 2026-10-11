@@ -3,8 +3,7 @@ from typing import TYPE_CHECKING, Protocol
 if TYPE_CHECKING:
     from uuid import UUID
 
-    from binomic.message import Message
-
+    from .message import Message
     from .types import Entry
 
 

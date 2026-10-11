@@ -47,43 +47,6 @@ class Binomic(AsyncContextManagerMixin):
         self._broker: Broker | None = None
         self._scheduler: TaskScheduler | None = None
 
-    async def arun(self) -> None:
-        try:
-            if self._broker is None:
-                self._broker = BrokerFactory(
-                    self._broker_dsn,
-                    self._config.queues,
-                ).create()
-                await self._broker.initialize()
-
-            if self._scheduler is None:
-                scheduler = TaskScheduler()
-                scheduler.start()
-                self._scheduler = scheduler
-
-            autodiscover(self._module_name)
-
-        except BaseException:
-            await self.aclose()
-            raise
-
-    async def aclose(self) -> None:
-
-        if self._scheduler is not None:
-            self._scheduler.shutdown()
-            self._scheduler = None
-
-        if self._broker is not None:
-            await self._broker.aclose()
-            self._broker = None
-
-    async def _enqueue(self, queue: str, msg: "Message") -> None:
-
-        if self._broker is None:
-            raise RuntimeError("Run client `arun` before submitting messages.")
-
-        await self._broker.enqueue(queue, msg)
-
     async def submit(self, msg: "Message") -> "UUID":
         """Dispatch a message to its task.
 
@@ -100,16 +63,19 @@ class Binomic(AsyncContextManagerMixin):
 
         spec = registry.get(msg.name)
 
+        if self._broker is None:
+            raise RuntimeError("Broker not initialized.")
+
         match spec.mode:
             case "direct":
-                await self._enqueue(spec.queue, msg)
+                await self._broker.enqueue(spec.queue, msg)
 
             case "delay":
                 if self._scheduler is None:
-                    raise RuntimeError("Run client `arun` before submitting messages.")
+                    raise RuntimeError("Scheduler not initialized.")
 
                 self._scheduler.delay(
-                    func=self._enqueue,
+                    func=self._broker.enqueue,
                     spec=spec,
                     args=(spec.queue, msg),
                 )
@@ -133,7 +99,7 @@ class Binomic(AsyncContextManagerMixin):
             match spec.mode:
                 case "interval":
                     scheduler.interval(
-                        func=self._enqueue,
+                        func=self._broker.enqueue,
                         spec=spec,
                         args=(spec.queue, Message(name=spec.name)),
                     )
@@ -142,7 +108,7 @@ class Binomic(AsyncContextManagerMixin):
 
                 case "cron":
                     scheduler.cron(
-                        func=self._enqueue,
+                        func=self._broker.enqueue,
                         spec=spec,
                         args=(spec.queue, Message(name=spec.name)),
                     )
@@ -171,7 +137,20 @@ class Binomic(AsyncContextManagerMixin):
         )
 
         try:
-            await self.arun()
+            # Initialize resources
+            if self._broker is None:
+                self._broker = BrokerFactory(
+                    self._broker_dsn,
+                    self._config.queues,
+                ).create()
+                await self._broker.initialize()
+
+            if self._scheduler is None:
+                scheduler = TaskScheduler()
+                scheduler.start()
+                self._scheduler = scheduler
+
+            autodiscover(self._module_name)
 
             # auto register cron and interval tasks
             self._register_interval_cron_tasks()
@@ -182,10 +161,15 @@ class Binomic(AsyncContextManagerMixin):
                 tg.cancel_scope.cancel()
 
         finally:
-            try:
-                await master.aclose()
-            finally:
-                await self.aclose()
+            await master.aclose()
+
+            if self._scheduler is not None:
+                self._scheduler.shutdown()
+                self._scheduler = None
+
+            if self._broker is not None:
+                await self._broker.aclose()
+                self._broker = None
 
 
 class BinomicFactory:

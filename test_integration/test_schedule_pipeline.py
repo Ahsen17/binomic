@@ -13,9 +13,9 @@ import anyio
 import pytest
 from redis.asyncio import Redis as AsyncRedis
 
+from binomic.broker import Message
 from binomic.client import Binomic
 from binomic.config import BinomicConfig
-from binomic.message import Message
 from test_integration.schedule import DELAY_SECONDS, SCHEDULE_QUEUE
 from test_integration.schedule.tasks import DSN_ENV, KEY_ENV
 

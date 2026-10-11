@@ -7,8 +7,7 @@ import pytest
 import structlog
 from fakeredis import FakeAsyncRedis, FakeServer
 
-from binomic.broker import AsyncredisBroker
-from binomic.message import Message
+from binomic.broker import AsyncredisBroker, Message
 from binomic.task.registry import TaskRegistry, registry
 
 __all__ = ()

@@ -3,8 +3,7 @@
 import pytest
 from redis.asyncio import Redis as AsyncRedis
 
-from binomic.broker import AsyncredisBroker
-from binomic.message import Message
+from binomic.broker import AsyncredisBroker, Message
 
 QUEUE = "reclaim-pipeline"
 

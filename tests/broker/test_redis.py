@@ -1,8 +1,7 @@
 import time
 from collections.abc import Callable
 
-from binomic.broker import AsyncredisBroker, Entry
-from binomic.message import Message
+from binomic.broker import AsyncredisBroker, Entry, Message
 
 
 class TestStreamKey:

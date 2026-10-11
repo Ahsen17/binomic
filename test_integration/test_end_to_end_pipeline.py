@@ -6,9 +6,9 @@ import anyio
 import pytest
 from redis.asyncio import Redis as AsyncRedis
 
+from binomic.broker import Message
 from binomic.client import Binomic
 from binomic.config import BinomicConfig
-from binomic.message import Message
 from test_integration import E2E_QUEUE
 
 EXECUTION_TIMEOUT: float = 30.0

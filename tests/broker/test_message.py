@@ -1,7 +1,7 @@
 from collections.abc import Callable
 from uuid import UUID
 
-from binomic.message import Message
+from binomic.broker import Message
 
 
 class TestMessageDefaults:

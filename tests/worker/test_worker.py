@@ -10,8 +10,7 @@ import anyio.lowlevel
 import pytest
 from pytest_mock import MockerFixture
 
-from binomic.broker import AsyncredisBroker
-from binomic.message import Message
+from binomic.broker import AsyncredisBroker, Message
 from binomic.task import TaskScheduler
 from binomic.task.registry import TaskRegistry, TaskSpec, registry
 from binomic.worker import Worker, WorkerPolicy

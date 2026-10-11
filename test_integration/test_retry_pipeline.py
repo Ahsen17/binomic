@@ -10,9 +10,9 @@ import anyio
 import pytest
 from redis.asyncio import Redis as AsyncRedis
 
+from binomic.broker import Message
 from binomic.client import Binomic
 from binomic.config import BinomicConfig
-from binomic.message import Message
 from test_integration import RETRY_QUEUE
 
 MAX_ATTEMPTS: int = 2

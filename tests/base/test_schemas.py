@@ -17,7 +17,7 @@ class TestBaseStruct:
 
     def test_to_json_encodes_fields(self) -> None:
 
-        assert Payload(name="a", count=2).to_json() == '{"name":"a","count":2}'
+        assert Payload(name="a", count=2).to_json() == '{"count":2,"name":"a"}'
 
     def test_from_json_round_trip(self) -> None:
 
@@ -45,4 +45,4 @@ class TestBaseStruct:
 
     def test_repr_is_json(self) -> None:
 
-        assert repr(Payload(name="a")) == '{"name":"a","count":0}'
+        assert repr(Payload(name="a")) == '{"count":0,"name":"a"}'

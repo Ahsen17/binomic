@@ -116,11 +116,17 @@ def autodiscover(
     try:
         pkg = importlib.import_module(package)
     except ModuleNotFoundError:
-        logger.warning("Package %s not found, skipping task discovery", package)
+        logger.warning(
+            "Package not found, skipping task discovery.",
+            package=package,
+        )
         return []
 
     if not hasattr(pkg, "__path__"):
-        logger.warning("%s is not a package, cannot recurse", package)
+        logger.warning(
+            "Target path is not a package, cannot recurse",
+            package=package,
+        )
         return []
 
     imported: list[str] = []
@@ -136,10 +142,6 @@ def autodiscover(
             if on_error == "raise":
                 raise
             if on_error == "warn":
-                logger.warning(
-                    "Failed to import task module %s",
-                    module_info.name,
-                    exc_info=True,
-                )
+                logger.warning("Failed to import task module.", module=module_info.name)
 
     return imported

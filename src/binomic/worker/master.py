@@ -57,7 +57,7 @@ class Master:
         )
 
         worker.start()
-        logger.info("Worker [%s] started.", ident)
+        logger.info("Worker started.", worker=ident)
 
         # Recorded together, so a worker can never reach the table without the
         # cell the visor reads it through.
@@ -72,9 +72,9 @@ class Master:
 
             if worker.is_alive():
                 logger.warning(
-                    "Worker [%s] did not stop within %ss, killing it",
-                    worker.name,
-                    TERMINATE_TIMEOUT,
+                    "Worker did not stop, killing it",
+                    worker=worker.name,
+                    timeout=TERMINATE_TIMEOUT,
                 )
                 worker.kill()
 
@@ -88,7 +88,7 @@ class Master:
 
         except BaseException as exc:
             if isinstance(exc, anyio.get_cancelled_exc_class()):
-                logger.error("Master process cancelled", exc_info=exc)
+                logger.error("Master process cancelled", error=exc)
 
             raise
 
@@ -113,7 +113,7 @@ class Master:
 
                     # restart
                     self._run_proc(ident)
-                    logger.warning("Worker [%s] restarted", ident)
+                    logger.warning("Worker restarted", worker=ident)
 
     async def aclose(self) -> None:
 

@@ -104,7 +104,7 @@ class Binomic(AsyncContextManagerMixin):
                         args=(spec.queue, Message(name=spec.name)),
                     )
 
-                    logger.info("Registered interval task `%s`.", spec.name)
+                    logger.info("Registered interval task.", task=spec.name)
 
                 case "cron":
                     scheduler.cron(
@@ -113,7 +113,7 @@ class Binomic(AsyncContextManagerMixin):
                         args=(spec.queue, Message(name=spec.name)),
                     )
 
-                    logger.info("Registered cron task `%s`.", spec.name)
+                    logger.info("Registered cron task.", task=spec.name)
 
     @asynccontextmanager
     async def __asynccontextmanager__(self) -> AsyncGenerator[Self, None]:

@@ -168,7 +168,11 @@ class AsyncredisBroker(Broker):
                 except DeserializationError as err:
                     # An unreadable payload can never be executed, and raising
                     # here would kill the worker loop it is reclaimed for.
-                    logger.warning("Dropping unreadable message %s: %s", msg_id, err)
+                    logger.warning(
+                        "Dropping unreadable message.",
+                        msg_id=msg_id,
+                        error=err,
+                    )
 
                     await self.ack(Entry(queue, msg_id, fields))
                     # TODO: send to DLQ

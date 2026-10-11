@@ -124,7 +124,11 @@ class Worker(SpawnProcess):
 
         while not terminate.is_set():
             self._presence.heartbeat()
-            logger.info(f"Worker [{self._consumer}] tiktoking: {time.time()}")  # noqa: G004
+            logger.info(
+                "Worker tiktoking.",
+                worker=self._consumer,
+                heartbeat=time.time(),
+            )
 
             await anyio.sleep(self._policy.heartbeat_interval)
 
@@ -150,7 +154,7 @@ class Worker(SpawnProcess):
             if (
                 elapsed := time.time() - fields["enqueued_at"]
             ) > self._policy.task_timeout:
-                logger.warning("Message %s has expired.", fields["id"])
+                logger.warning("Message has expired.", msg_id=fields["id"])
 
             else:
                 try:
@@ -169,9 +173,9 @@ class Worker(SpawnProcess):
                         raise
 
                     logger.error(
-                        "Failed to process message %s: %s",
-                        fields["id"],
-                        str(err),
+                        "Failed to process message.",
+                        msg_id=fields["id"],
+                        error=str(err),
                     )
 
             # The invocation did not succeed: retry it until the budget is spent.
@@ -179,8 +183,8 @@ class Worker(SpawnProcess):
             msg.attempt += 1
             if msg.attempt > self._policy.max_attempts:
                 logger.warning(
-                    "Failed to process message %s: max attempts reached.",
-                    fields["id"],
+                    "Failed to process message: max attempts reached.",
+                    msg_id=fields["id"],
                 )
 
                 # TODO: send to DLQ
@@ -195,16 +199,16 @@ class Worker(SpawnProcess):
 
         except TaskNotFoundError as err:
             logger.error(
-                "Failed to process message %s: %s",
-                fields["id"],
-                str(err),
+                "Failed to process message.",
+                msg_id=fields["id"],
+                error=str(err),
             )
 
         except DeserializationError as err:
             logger.error(
-                "Failed to deserialize message %s: %s",
-                fields["id"],
-                str(err),
+                "Failed to deserialize message.",
+                msg_id=fields["id"],
+                error=str(err),
             )
 
             # TODO: send to DLQ
@@ -216,9 +220,9 @@ class Worker(SpawnProcess):
                 raise
 
             logger.error(
-                "Failed to process message %s: %s",
-                fields["id"],
-                str(exc),
+                "Failed to process message.",
+                msg_id=fields["id"],
+                error=str(exc),
             )
 
             # TODO: send to DLQ

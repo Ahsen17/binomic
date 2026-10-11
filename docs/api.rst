@@ -25,12 +25,6 @@ binomic.task.scheduler
 .. automodule:: binomic.task.scheduler
    :members:
 
-binomic.message
----------------
-
-.. automodule:: binomic.message
-   :members:
-
 binomic.broker
 --------------
 

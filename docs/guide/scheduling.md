@@ -68,7 +68,7 @@ def poll() -> None: ...
 里的队列**决定，`submit` 不接受调用方指定队列。
 
 ```python
-from binomic.message import Message
+from binomic.broker import Message
 
 # `binomic` 的构造见「快速上手」
 async with binomic:

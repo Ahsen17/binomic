@@ -90,7 +90,7 @@ function name; functions in `cron` and `interval` mode take no arguments.
 ```python
 from binomic.client import Binomic, BinomicFactory
 from binomic.config import BinomicConfig
-from binomic.message import Message
+from binomic.broker import Message
 from binomic.task import autodiscover
 
 # Discover and register every tasks.py module inside the myapp package

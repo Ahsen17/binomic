@@ -83,7 +83,7 @@ message lands in is decided by the **queue in the task declaration**; `submit`
 does not take a caller-specified queue.
 
 ```python
-from binomic.message import Message
+from binomic.broker import Message
 
 # `binomic` is built as shown in the quick start
 async with binomic:

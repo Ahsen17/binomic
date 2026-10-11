@@ -84,7 +84,7 @@ def poll() -> None: ...
 ```python
 from binomic.client import Binomic, BinomicFactory
 from binomic.config import BinomicConfig
-from binomic.message import Message
+from binomic.broker import Message
 from binomic.task import autodiscover
 
 # 发现 myapp 包内所有 tasks.py 模块并注册任务

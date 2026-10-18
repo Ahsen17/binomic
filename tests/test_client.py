@@ -289,7 +289,14 @@ class TestStartClose:
 
 
 class TestBinomicFactory:
-    def test_create_returns_singleton(self, config: BinomicConfig) -> None:
+    def test_create_returns_singleton(
+        self, client_app: Path, config: BinomicConfig
+    ) -> None:
+
+        # The fixture materialises the sample app and puts it on sys.path;
+        # without requesting it here, xdist may run this test in a worker
+        # that never discovered the package.
+        assert client_app.is_dir()
 
         factory = BinomicFactory(
             broker_dsn="redis://localhost:6379/0",
@@ -299,7 +306,11 @@ class TestBinomicFactory:
 
         assert factory.create() is factory.create()
 
-    def test_create_builds_a_binomic(self, config: BinomicConfig) -> None:
+    def test_create_builds_a_binomic(
+        self, client_app: Path, config: BinomicConfig
+    ) -> None:
+
+        assert client_app.is_dir()
 
         client = BinomicFactory(
             broker_dsn="redis://localhost:6379/0",

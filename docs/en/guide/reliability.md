@@ -1,73 +1,88 @@
 # Reliability
 
-A message that has been sent out can fail to run or overrun its timeout. This
-page covers how Binomic handles the two cases: **retrying a failure**, and the
-**dead letter queue (DLQ)** that is not implemented yet. See
-[Architecture](architecture.md) for where they sit in the pipeline.
+A message that has been sent out can fail, overrun its timeout, or go
+stranded. This page covers how Binomic handles each case: **retrying a
+failure**, **timeouts and staleness**, and the **dead letter queue (DLQ)**.
+See [Architecture](architecture.md) for where they sit in the pipeline.
 
-## Attempt count
+## Attempts and the deadline
 
-`Message` carries an `attempt` field (default `1`) that is serialized with the
-payload, so it travels with the message across processes and across
-redeliveries. Every delivery counts as one attempt:
+`Message` carries an `attempt` field (default `1`) that is serialized with
+the payload, so it travels with the message across processes and across
+redeliveries. `task_timeout` is a message's **total delivery deadline**: it
+starts at the first enqueue and redelivery does not reset it. Together they
+decide every message's fate.
 
 - the client's first delivery: `attempt = 1`;
-- a worker that fails or overruns its timeout: `attempt += 1`, and the message is
-  redelivered **after a backoff** while the budget lasts;
-- `reclaim` bumping a stranded message to a new consumer: `attempt += 1` too.
+- a worker whose task fails: the broker-side Lua script bumps `attempt`, and
+  the message is redelivered after a backoff;
+- `reclaim` picking up a message stranded by a dead worker: `attempt` is
+  bumped and the stamp **renewed** (see below).
 
 ## Retrying a failure
 
-When a task raises or runs longer than `task_timeout`, the worker:
+When a task raises, the worker:
 
 1. logs the failure;
-2. increments `attempt`;
-3. redelivers the message **after a backoff** if `attempt <= max_attempts`
-   (default `3`) — the new attempt is a new entry in the stream;
-4. logs `max attempts reached` and drops the message once the budget is spent
-   (for now it stops at the log line; see DLQ below).
-
-A message that sat in the queue longer than `task_timeout` (that is, its
-`enqueued_at` is too old) takes the same path: it is not executed but
-re-enqueued with a new timestamp.
-
-```python
-from binomic.config import BinomicConfig
-
-# At most 3 attempts per message (the first one plus 2 redeliveries)
-config = BinomicConfig(queues=["default"], max_attempts=3)
-```
+2. if `attempt + 1 > max_attempts` (default `3`), the message goes to the
+   **dead letter queue** and the flow ends;
+3. otherwise the worker's own scheduler defers an atomic broker re-enqueue by
+   a **backoff** — a single Lua call that writes the copy and acks the
+   original together. The copy's `attempt` is already bumped, while its
+   `enqueued_at` **keeps the original value** (the deadline accumulates
+   across retries, see below).
 
 ```{note}
-Redelivery is **not** immediate: the worker defers it by a backoff that starts
-at 1.5 seconds, doubles each time (3 / 6 / 12 / 24 seconds) and caps at **30
-seconds**. The wait is held by a scheduler the worker owns, which queues the
-re-enqueue as a deferred job, and the original is **acked as soon as that job is
-scheduled**. Two consequences follow:
-
-- a worker that exits inside the backoff window loses that one redelivery — the
-  price of never delivering a message twice;
-- the deferred job is scheduled to run even when the loop reaches it late,
-  rather than being silently skipped.
-
-The backoff is fixed for now and cannot be configured; wait inside the task
-function if you need another pace.
+Redelivery is **not** immediate: the backoff starts at 1.5 seconds, doubles
+each time (3 / 6 / 12 / 24 seconds) and caps at **30 seconds**. The wait is
+held by a scheduler the worker owns, and it is scheduled to run even when the
+loop reaches it late — a busy event loop never silently skips a retry. The
+backoff is currently fixed; if you need a different rhythm, wait inside the
+task function itself.
 ```
 
-Two kinds of failure are **not** retried — they are logged and `ack`ed (the
-message is dropped), because redelivering the same payload cannot change the
-outcome:
+## Timeout and staleness (straight to the DLQ)
 
-- a payload that cannot be deserialized;
-- a task name that was never registered (`TaskNotFoundError`).
+`task_timeout` bites in two places, both meaning "total delivery deadline":
 
-**Cancellation does not ack**: when a worker shuts down or a task is cancelled,
-the message stays in the PEL instead of being acknowledged, leaving it for the
-next `reclaim` to redeliver to another consumer.
+- **execution timeout**: a task that runs longer than `task_timeout` is
+  cancelled — the message goes **straight to the DLQ, with no retry**;
+- **staleness**: a message whose `enqueued_at` is older than `task_timeout`
+  (it queued too long) is not executed and goes straight to the DLQ.
 
-## Dead letter queue (not implemented)
+A failure retry does **not** reset the deadline: the copy keeps the original
+`enqueued_at`, so a message whose "queueing + execution + backoff" total
+exceeds `task_timeout` is judged stale and DLQ'd on its next delivery. The
+one exception is `reclaim` (below).
 
-Both an exhausted `max_attempts` and the two non-retryable failures above are
-currently logged and then dropped; the code carries `TODO: send to DLQ` markers.
-Until a DLQ exists, those messages are **unrecoverable** — catch the exception
-inside the task function yourself if you need to keep them.
+## The dead letter queue (DLQ)
+
+Three kinds of message end up in the DLQ: execution timeouts, stale
+messages, and exhausted `max_attempts`. The DLQ is a pair of keys per queue —
+`{namespace}:{queue}:dlq:stream` plus `:dlq:hash`. The copy's `attempt`
+matches the last delivery (terminal states do not bump it) and the payload is
+preserved whole: inspectable and replayable.
+
+## reclaim: crash recovery
+
+When a worker process dies (crash, SIGKILL), nobody acks what sat in its PEL.
+Other consumers run `XAUTOCLAIM` every `reclaim_interval`, taking over
+messages idle for more than `min_idle_ms` (`task_timeout` in milliseconds,
+floored at 10 seconds). Unlike a failure retry, a reclaimed copy is **stamped
+anew**: the worker died — a *lost delivery*, not a task failure — so the copy
+gets a full fresh deadline window. Otherwise the stranding time alone would
+already read as stale, and every reclaimed message would arrive dead on
+arrival. `attempt` is bumped as usual.
+
+## Neither retried nor dead-lettered
+
+- an unregistered task name (`TaskNotFoundError`): redelivering the same
+  payload cannot change the outcome, so the message is acked and dropped;
+- a cancelled task, or a worker that received an exit signal (`SystemExit` /
+  `KeyboardInterrupt`): the exception propagates as-is, the message is **not
+  acked** and stays in the PEL for the next `reclaim` to hand to another
+  consumer.
+
+Payload integrity is guarded at the broker: `acquire` / `reclaim` clean up
+entries whose body cannot be read (`XACK` + `XDEL`); such corruption does not
+count as an attempt.

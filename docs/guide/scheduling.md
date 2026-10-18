@@ -15,7 +15,7 @@ def example(index: int = 0) -> None: ...
 ```
 
 第一个位置参数是**队列名**，需与 `BinomicConfig` 的 `queues` 对应；`mode` 是仅限
-关键字传参，默认 `"direct"`。任务以**函数名的小写形式**注册，投递时用该名字指定任务；
+关键字传参，默认 `"direct"`。任务以**函数名原样**注册（区分大小写），投递时用该名字指定任务；
 注册表内名字唯一，重复注册同名任务会抛 `DuplicateTaskError`。
 
 | 模式 | 附加参数 | 执行时机 | 能否带参数 |
@@ -47,8 +47,9 @@ def poll() -> None: ...
 - 周期任务带参数：`cron` 与 `interval` 模式的函数**不能有参数** —— 周期触发时没有调用
   参数可传（原因见下节）。
 
-延迟与间隔的取值只要求是**正数**，这条在**提交/调度时**才由调度器校验（声明期只校验
-参数是否存在），见下文「直接使用调度器」。
+延迟与间隔的取值只要求是**正数**，这条在**声明期**由装饰器校验（`delay` / `interval`
+`<= 0` 直接抛 `ValueError`）。`TaskScheduler` 本身是通用的可调用对象封装、不感知任务
+语义，因此不做这类校验，见下文「直接使用调度器」。
 
 ```{note}
 `cron` 与 `interval` 的触发时刻按**调度器时区**计算，默认是 **UTC**。客户端自动注册
@@ -72,7 +73,7 @@ from binomic.broker import Message
 
 # `binomic` 的构造见「快速上手」
 async with binomic:
-    await binomic.submit(Message(name="example", args=[1]))
+    await binomic.submit(Message(task="example", args=[1]))
 ```
 
 ## 周期任务的注册
@@ -88,11 +89,7 @@ async with binomic:
 ```python
 import asyncio
 
-from binomic.task import TaskScheduler, task
-
-
-@task("default", mode="delay", delay=5)
-def reminder_delay() -> None: ...
+from binomic.task import TaskScheduler
 
 
 def send_reminder(user_id: str) -> None:
@@ -102,17 +99,17 @@ def send_reminder(user_id: str) -> None:
 async def main() -> None:
     scheduler = TaskScheduler()
     scheduler.start()  # 必须在运行中的事件循环内
-    scheduler.delay(func=send_reminder, spec=reminder_delay, args=("u-1",))
+    scheduler.delay(func=send_reminder, delay=5.0, args=("u-1",))
 
     await asyncio.sleep(6)  # 等作业到期
-    scheduler.shutdown()
+    scheduler.close()
 
 
 asyncio.run(main())
 ```
 
-上例中 `reminder_delay` 只用来提供「延迟 5 秒」这一时序参数与校验，真正被调用的可调用
-对象是传给 `func` 的 `send_reminder`。
+`TaskScheduler` 只接收可调用对象，不感知 `TaskSpec`；延时、cron 表达式、间隔都由调用
+方直接给出，到期后原样调用 `func`。
 
 - **必须在运行中的事件循环内使用**：`TaskScheduler` 基于 APScheduler 的
   `AsyncIOScheduler`，后者在 `start()` 时就地捕获当前事件循环 —— 在事件循环之外调用
@@ -120,21 +117,19 @@ asyncio.run(main())
   但前提是有一个正在运行的事件循环（客户端路径天然满足，因为它在事件循环内启动调度器）。
 - **构造**：`TaskScheduler(timezone=UTC)`，默认时区为 UTC；三个方法创建的触发器都使用
   该时区。
-- **`spec` 从哪来**：`@task(...)` 装饰器的返回值就是一个 `TaskSpec`，它提供时序参数
-  （`delay` / `cron` / `interval`）并参与校验。
-- **方法**：`delay(func, spec, *, delay=None, args=None, kwargs=None)`、
-  `interval(...)`、`cron(...)` 均为**同步方法**；`func` 是到期时要调用的可调用对象，
-  `args` / `kwargs` 原样传给 `func`。`delay` 多一个可选关键字 `delay`：给出时直接用它
-  作为延时秒数，并**跳过**「`spec` 必须是 `delay` 模式」那一条校验 —— Worker 的失败重投
-  正是靠它，把一个非 delay 模式的 `spec` 排成延时作业（见[可靠性](reliability.md)）。
-- **校验**：`spec` 的模式与所调方法不符、或缺少对应取值时抛 `ValueError`（如
-  ``Task is not a delay task or lack `delay` value.``，仅当未显式给出 `delay` 时生效）。
-  `delay` 与 `interval` 的取值 `<= 0` 时也抛 `ValueError`
-  （``... must be greater than 0.``）；`cron` 没有非正值校验 —— cron 表达式不存在
-  「非正值」的概念。
-- **生命周期**：`start()` 之后作业才会真正触发，`shutdown()` 停机，二者均为同步方法。
-  注意 `shutdown()` 紧跟在调度之后调用会让作业来不及触发（上例用
-  `await asyncio.sleep(6)` 等到达期）。
-- **迟到也执行**：排出的作业带 `misfire_grace_time=None`，因此即便调度器在 `run_date`
-  之后才轮到它（事件循环被占住、或进程一度停顿），作业照样触发，不会被当作「错过的运行」
-  而静默丢弃 —— 延后投递代表的是**必须发生**的动作。
+- **方法**：`delay(func, *, delay, args=None, kwargs=None)`、
+  `cron(func, *, cron, args=None, kwargs=None)`、
+  `interval(func, *, interval, args=None, kwargs=None)`，均为**同步方法**；`func` 是
+  到期时要调用的可调用对象，`args` / `kwargs` 原样传给 `func`。调度器不感知任务语义，
+  时序值不合法时由 APScheduler 的触发器构造报错。
+- **校验归属**：任务语义（模式、必填参数、正数）在**声明期**由 `@task` 装饰器校验，
+  在**提交期**由 `Binomic.submit` 复核；调度器只负责排程。Worker 的失败重投就是直接
+  调 `scheduler.delay` 把 `broker.retry` 排成延时作业（见[可靠性](reliability.md)）。
+- **生命周期**：`start()` 之后作业才会真正触发，`close()` 停机，二者均为同步方法；
+  `close()` 对底层 `AsyncIOScheduler` 的停止在事件循环的下一个 tick 生效。注意
+  `close()` 紧跟在调度之后调用会让作业来不及触发（上例用 `await asyncio.sleep(6)`
+  等到达期）。
+- **迟到也执行**：`delay` 排出的作业带 `misfire_grace_time=None`，因此即便调度器在
+  `run_date` 之后才轮到它（事件循环被占住、或进程一度停顿），作业照样触发，不会被当作
+  「错过的运行」而静默丢弃 —— 延后投递代表的是**必须发生**的动作；`cron` / `interval`
+  沿用 APScheduler 默认宽限。

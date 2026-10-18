@@ -29,8 +29,10 @@ reclaims work from dead consumers. Message payloads are serialized with
   modes
 - **Redis Streams broker**: reliable delivery built on consumer groups and the
   PEL, with `xautoclaim`-based reclaim of messages from dead consumers
-- **Retries**: failed or overdue messages are redelivered after a backoff
-  (1.5 seconds, doubling, capped at 30) up to `max_attempts` (3 by default)
+- **Retries and dead-letter queue**: failed messages are redelivered after a
+  backoff (1.5 seconds, doubling, capped at 30) up to `max_attempts`
+  (3 by default); timed-out, stale and exhausted messages land in a dead
+  letter queue (DLQ) that can be inspected and replayed
 - **Multiprocess workers**: the master spawns worker subprocesses via
   multiprocessing and supervises them with a presence heartbeat
 - **Type safe**: fully mypy strict and ruff checked, with a generic
@@ -82,19 +84,14 @@ def poll() -> None: ...
 ```
 
 The first positional argument is the queue name (it must match the `queues`
-configuration), and tasks are registered under the lowercase form of the
-function name; functions in `cron` and `interval` mode take no arguments.
+configuration), and tasks are registered under the function name as written
+(case-sensitive); functions in `cron` and `interval` mode take no arguments.
 
 ### 2. Start and submit
 
 ```python
-from binomic.client import Binomic, BinomicFactory
-from binomic.config import BinomicConfig
+from binomic.client import Binomic, BinomicConfig, BinomicFactory
 from binomic.broker import Message
-from binomic.task import autodiscover
-
-# Discover and register every tasks.py module inside the myapp package
-autodiscover("myapp")
 
 factory = BinomicFactory(
     broker_dsn="redis://localhost:6379/0",
@@ -105,23 +102,27 @@ factory = BinomicFactory(
 binomic: Binomic = factory.create()
 
 # Entering the context starts the master (spawning worker subprocesses)
-# and exposes the submission entry point
+# and exposes the submission entry point; construction has already
+# discovered and registered every tasks.py module inside myapp
 async with binomic:
-    await binomic.submit(Message(name="example", args=[1]))
+    await binomic.submit(Message(task="example", args=[1]))
 ```
 
 Which stream a message lands in is decided by the queue in the task
-declaration (a message does not specify one), and `enqueued_at` is written by
-the client on delivery into the message's stream entry (not onto the `Message`),
-so it needs no manual assignment. `submit` supports
+declaration (a message does not specify one), and `enqueued_at` is stamped by
+the client on delivery (not onto the `Message`), so it needs no manual
+assignment. `submit` supports
 only the `direct` and `delay` modes: `cron` and `interval` tasks are registered
 automatically when the client starts, and calling `submit` on them raises
-`ValueError`.
+`ValueError`. The Redis key prefix and consumer group name (`namespace`) are
+derived internally from `module_name` by both the client and the workers, so
+the two sides land on the same namespace automatically; it is not a
+user-facing parameter.
 
 ### 3. Integrate with Litestar
 
 ```python
-from binomic.config import BinomicConfig
+from binomic.client import BinomicConfig
 from binomic.plugin.litestar import BinomicPlugin
 from litestar import Litestar
 
@@ -143,13 +144,13 @@ parameter.
 
 ```mermaid
 flowchart TD
-    P[Producer<br>Binomic client] -->|submit: direct| B[AsyncredisBroker<br>Redis Streams]
+    P[Producer<br>Binomic client] -->|submit: direct| B[RedisBroker<br>Redis Streams]
     P -->|submit: delay| S[TaskScheduler]
     P -.->|registered at startup: cron / interval| S
     S -->|enqueued when due| B
     B -->|consumer group / PEL| W1[Worker 0<br>subprocess]
     B -->|consumer group / PEL| W2[Worker 1<br>subprocess]
-    W1 -.->|failure or timeout:<br>redeliver after a backoff, attempt + 1| B
+    W1 -.->|failure: redeliver after a backoff<br>timeout / stale / exhausted: to the DLQ| B
     M[Master<br>supervisor] -->|restart when dead| W1
     M -->|restart when dead| W2
     W1 -.->|presence heartbeat: IPC| M
@@ -165,9 +166,12 @@ flowchart TD
   `delay` / `cron` / `interval` modes and enqueues through the same path as
   `direct` once a job is due. Each worker holds one of its own too, carrying
   the backoff of a failed redelivery.
-- **Broker**: `AsyncredisBroker` writes messages to Redis Streams; workers read
-  them through a consumer group, and messages stranded in a dead consumer's
-  PEL are redelivered via `reclaim` (`xautoclaim`), which bumps `attempt`.
+- **Broker**: `RedisBroker` writes messages to Redis Streams (per-queue
+  `:stream` + `:hash` dual storage); workers read them through a consumer
+  group, and messages stranded in a dead consumer's PEL are redelivered via
+  `reclaim` (`xautoclaim`), which bumps `attempt` and stamps anew. Failure
+  retries keep the original stamp — `task_timeout` is a total delivery
+  deadline.
 - **Master / Worker**: the master spawns worker subprocesses through
   multiprocessing and supervises their liveness. The heartbeat goes over
   **inter-process IPC** (one shared `multiprocessing.Value` per worker, created
@@ -176,9 +180,11 @@ flowchart TD
   is up but has stopped beating; the master polls at a multiple of
   `heartbeat_interval` and terminates and rebuilds a worker the moment it is
   judged dead. Each worker executes tasks concurrently within its process via
-  `anyio`. A task that succeeds is `ack`ed; one that fails or overruns is
-  redelivered **after a backoff** while `max_attempts` lasts and dropped after
-  that; a cancelled task is **not** `ack`ed, leaving its message to `reclaim`.
+  `anyio`. A task that succeeds is `ack`ed; one that fails is redelivered
+  **after a backoff** while `max_attempts` lasts — the copy and the ack of the
+  original are one atomic Lua call; timed-out, stale and exhausted messages
+  land in the dead letter queue (DLQ); a cancelled task is **not** `ack`ed,
+  leaving its message to `reclaim`.
 
 ## Roadmap
 
@@ -186,19 +192,18 @@ The list below tracks the known gaps and the planned iteration order; a
 checked box means done. For what has landed, see
 [CHANGELOG.md](CHANGELOG.md).
 
-- [ ] **P0 · Message durability** -- ack a failed message only once its retry
-  has landed, and persist deferred jobs, so a process exit inside the backoff
-  window can no longer drop it silently; `delay`-mode submissions need the same
-  treatment -- they currently live in the client process's memory
-- [ ] **P0 · Bounded storage** -- give the streams a trimming policy (`xadd`
-  `maxlen` or cleanup on ack) so Redis memory does not grow without bound with
-  message history
+- [ ] **P0 · Persisted delayed jobs** -- `delay`-mode submissions still depend
+  on the scheduler living in the client process's memory and are lost on exit;
+  they need to be persisted (queued on the Redis side)
+- [ ] **P0 · Bounded storage** -- ack/dead/reclaim already `XDEL` completed
+  stream entries, but the underlying radix tree still grows slowly with
+  message history; a `XTRIM`/`MINID` policy is needed
 - [ ] **P1 · Configuration** -- promote `task_timeout` / `heartbeat_interval` /
   `reclaim_interval` / `read_count` / `poll_interval` to `BinomicConfig` fields
-  (they are hard-coded internal defaults today)
-- [ ] **P1 · Dead-letter queue** -- route messages past `max_attempts` and with
-  unparseable payloads into a DLQ that can be inspected and replayed (three
-  `TODO` markers in the code)
+  (they are internal `WorkerPolicy` defaults today, not user-facing)
+- [x] **P1 · Dead-letter queue** -- timed-out, stale and exhausted messages
+  land in the DLQ (`{namespace}:{queue}:dlq:stream` + `:dlq:hash`), inspectable
+  and replayable
 - [ ] **P2 · Multi-instance** -- make consumer names unique (e.g. an instance
   prefix) so several client instances can share one Redis database
 - [ ] **P2 · Observability** -- expose metrics hooks (queue depth, stranded

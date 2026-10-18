@@ -7,10 +7,10 @@ binomic.client
 .. automodule:: binomic.client
    :members:
 
-binomic.config
---------------
+binomic.client.config
+---------------------
 
-.. automodule:: binomic.config
+.. automodule:: binomic.client.config
    :members:
 
 binomic.task

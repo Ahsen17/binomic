@@ -4,7 +4,7 @@ Binomic 内置 {class}`~binomic.plugin.litestar.BinomicPlugin`，将 `Binomic`
 客户端注入 [Litestar](https://docs.litestar.dev/) 依赖体系：
 
 ```python
-from binomic.config import BinomicConfig
+from binomic.client import BinomicConfig
 from binomic.plugin.litestar import BinomicPlugin
 from litestar import Litestar
 

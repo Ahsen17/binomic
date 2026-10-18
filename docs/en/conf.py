@@ -50,3 +50,7 @@ exclude_patterns = [
 # Mermaid
 mermaid_parallel = True
 mermaid_parallel_processes = 2
+
+# Litestar only ships in the `docs` dependency group; mock it so the plugin
+# API page builds without the optional dependency installed.
+autodoc_mock_imports = ["litestar"]

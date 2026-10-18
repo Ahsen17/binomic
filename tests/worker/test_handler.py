@@ -84,10 +84,7 @@ async def stream_entry_ids(broker: RedisBroker) -> list[str]:
     entries = await broker._ensure_client().xrange(STREAM_KEY, "-", "+")
     assert entries is not None
 
-    return [
-        entry_id
-        for entry_id, _fields in cast("list[tuple[Any, Any]]", entries)
-    ]
+    return [entry_id for entry_id, _fields in cast("list[tuple[Any, Any]]", entries)]
 
 
 class TestSuccess:

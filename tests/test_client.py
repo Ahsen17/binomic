@@ -93,6 +93,7 @@ class TestConstruction:
         with pytest.raises(ValueError, match="not found"):
             make_client(module_name="no_such_pkg_xyz")
 
+
 class TestSubmit:
     async def test_direct_enqueues_immediately(
         self,

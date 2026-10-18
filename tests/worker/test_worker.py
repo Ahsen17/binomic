@@ -14,9 +14,7 @@ SAMPLE_MODULE = "binomic"  # the package holding the shipped sample tasks
 class TestWorkerIdentity:
     def test_carries_identity(self, make_worker: Callable[..., Worker]) -> None:
 
-        worker = make_worker(
-            module_name=SAMPLE_MODULE, consumer="test-worker"
-        )
+        worker = make_worker(module_name=SAMPLE_MODULE, consumer="test-worker")
 
         assert worker._consumer == "test-worker"
         assert worker._module_name == SAMPLE_MODULE

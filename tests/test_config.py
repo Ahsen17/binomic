@@ -1,5 +1,5 @@
 from binomic.base import BaseStruct
-from binomic.config import BinomicConfig
+from binomic.client.config import BinomicConfig
 
 
 class TestBinomicConfig:

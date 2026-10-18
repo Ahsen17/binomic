@@ -7,8 +7,7 @@ import pytest
 from redis.asyncio import Redis as AsyncRedis
 
 from binomic.broker import Message
-from binomic.client import Binomic
-from binomic.config import BinomicConfig
+from binomic.client import Binomic, BinomicConfig
 from test_integration import E2E_QUEUE
 
 EXECUTION_TIMEOUT: float = 30.0
@@ -34,7 +33,7 @@ class TestEndToEndPipeline:
 
         async with client:
             await client.submit(
-                Message(name="write_result", args=[probe_dsn, result_key]),
+                Message(task="write_result", args=[probe_dsn, result_key]),
             )
 
             executed = False
@@ -48,6 +47,8 @@ class TestEndToEndPipeline:
             )
             assert await redis_client.get(result_key) == "done"
 
-            pending = await redis_client.xpending(f"binomic:{E2E_QUEUE}", "binomic")
+            pending = await redis_client.xpending(
+                f"test_integration:{E2E_QUEUE}:stream", "test_integration"
+            )
 
             assert pending["pending"] == 0

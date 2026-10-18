@@ -92,3 +92,24 @@ class TestMasterPresence:
         presence.watch("worker-0", make_heartbeat())
 
         assert presence.presence() == {"worker-0": 0.0, "worker-1": 8.0}
+
+    def test_reads_without_taking_the_cell_lock(
+        self, heartbeat: "Synchronized[float]"
+    ) -> None:
+        """The lock exists for read-modify-write only; presence() must never
+        wait on it — a worker that died holding it would wedge the visor."""
+
+        calls: list[str] = []
+        real_get_obj = heartbeat.get_obj
+
+        def traced_get_obj() -> object:
+            calls.append("get_obj")
+            return real_get_obj()
+
+        heartbeat.get_obj = traced_get_obj  # type: ignore[assignment]
+
+        presence = MasterPresence()
+        presence.watch("worker-0", heartbeat)
+        presence.presence()
+
+        assert calls == ["get_obj"]  # value read directly, no lock acquired

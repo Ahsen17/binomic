@@ -1,7 +1,12 @@
 import pytest
 from msgspec import Struct
 
-from binomic.base.exceptions import DeserializationError, SerializationError
+from binomic.base.exceptions import (
+    BuiltinError,
+    ConvertError,
+    DeserializationError,
+    SerializationError,
+)
 from binomic.base.schemas import BaseStruct
 
 
@@ -17,13 +22,20 @@ class TestBaseStruct:
 
     def test_to_json_encodes_fields(self) -> None:
 
-        assert Payload(name="a", count=2).to_json() == '{"count":2,"name":"a"}'
+        assert Payload(name="a", count=2).to_json() == '{"name":"a","count":2}'
 
     def test_from_json_round_trip(self) -> None:
 
         payload = Payload.from_json('{"name":"a","count":2}')
 
         assert payload == Payload(name="a", count=2)
+
+    def test_to_dict_round_trip(self) -> None:
+
+        payload = Payload(name="a", count=2)
+
+        assert payload.to_dict() == {"name": "a", "count": 2}
+        assert Payload.from_dict(payload.to_dict()) == payload
 
     def test_to_json_wraps_errors(self) -> None:
 
@@ -32,6 +44,14 @@ class TestBaseStruct:
 
         with pytest.raises(SerializationError, match="Failed to serialize"):
             Broken(bad=object()).to_json()
+
+    def test_to_dict_wraps_errors(self) -> None:
+
+        class Broken(BaseStruct):
+            bad: object
+
+        with pytest.raises(BuiltinError, match="Failed to convert"):
+            Broken(bad=object()).to_dict()
 
     def test_from_json_wraps_errors(self) -> None:
 
@@ -43,6 +63,7 @@ class TestBaseStruct:
         with pytest.raises(DeserializationError):
             Payload.from_json('{"name":"a","count":"not-an-int"}')
 
-    def test_repr_is_json(self) -> None:
+    def test_from_dict_wraps_errors(self) -> None:
 
-        assert repr(Payload(name="a")) == '{"count":0,"name":"a"}'
+        with pytest.raises(ConvertError, match="Failed to parse"):
+            Payload.from_dict({"name": "a", "count": "not-an-int"})

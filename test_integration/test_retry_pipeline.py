@@ -11,8 +11,7 @@ import pytest
 from redis.asyncio import Redis as AsyncRedis
 
 from binomic.broker import Message
-from binomic.client import Binomic
-from binomic.config import BinomicConfig
+from binomic.client import Binomic, BinomicConfig
 from test_integration import RETRY_QUEUE
 
 MAX_ATTEMPTS: int = 2
@@ -47,7 +46,7 @@ class TestRetryPipeline:
 
         async with client:
             await client.submit(
-                Message(name="count_then_fail", args=[probe_dsn, attempts_key]),
+                Message(task="count_then_fail", args=[probe_dsn, attempts_key]),
             )
 
             with anyio.move_on_after(EXECUTION_TIMEOUT):
@@ -57,9 +56,11 @@ class TestRetryPipeline:
             assert int(await redis_client.get(attempts_key) or 0) == MAX_ATTEMPTS
 
             # The budget is spent, so the message is dropped, not redelivered.
-            assert (await redis_client.xpending(f"binomic:{RETRY_QUEUE}", "binomic"))[
-                "pending"
-            ] == 0
+            assert (
+                await redis_client.xpending(
+                    f"test_integration:{RETRY_QUEUE}:stream", "test_integration"
+                )
+            )["pending"] == 0
 
             await anyio.sleep(SETTLE)
 

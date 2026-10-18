@@ -1,371 +1,290 @@
-from collections.abc import AsyncIterator, Callable
+"""Client semantics: registration, submit branches, context lifecycle."""
+
+import sys
+from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import pytest
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
-from apscheduler.triggers.date import DateTrigger
-from apscheduler.triggers.interval import IntervalTrigger
 from pytest_mock import MockerFixture
 
-from binomic.broker import AsyncredisBroker, BrokerFactory, Message
-from binomic.client import Binomic, BinomicFactory
-from binomic.config import BinomicConfig
-from binomic.task import TaskScheduler
-from binomic.task.registry import TaskRegistry, TaskSpec
+from binomic.broker import Message, RedisBroker
+from binomic.client import Binomic, BinomicConfig, BinomicFactory
+from binomic.task import TaskNotFoundError
+
+APP_SOURCE = """\
+from binomic.task import task
 
 
-def stub_master(mocker: MockerFixture) -> None:
-    """Replace ``Master`` with a mock so no worker subprocess spawns."""
+@task("default", mode="direct")
+async def alpha() -> None: ...
 
-    master = mocker.Mock()
-    master.arun = mocker.AsyncMock()
-    master.aclose = mocker.AsyncMock()
-    mocker.patch("binomic.client.Master", return_value=master)
+
+@task("delayq", mode="delay", delay=5.0)
+async def later() -> None: ...
+
+
+@task("cronq", mode="cron", cron="*/5 * * * *")
+async def cronned() -> None: ...
+
+
+@task("cronq", mode="interval", interval=10.0)
+async def ticked() -> None: ...
+"""
+
+
+@pytest.fixture(scope="module")
+def client_app(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A task package with one task of every schedulable mode."""
+
+    root = tmp_path_factory.mktemp("clientapp")
+    pkg = root / "clientapp"
+    pkg.mkdir()
+    (pkg / "__init__.py").touch()
+    (pkg / "tasks.py").write_text(APP_SOURCE, encoding="utf-8")
+
+    sys.path.insert(0, str(root))
+    return root
 
 
 @pytest.fixture
 def config() -> BinomicConfig:
 
-    return BinomicConfig(queues=["default"])
+    return BinomicConfig(queues=["default", "delayq", "cronq"])
 
 
 @pytest.fixture
-def noop_task(isolate_registry: TaskRegistry) -> TaskSpec:
-    """Register the `noop` task that submitted messages resolve to."""
-
-    spec = TaskSpec(name="noop", queue="default", fn=lambda: None)
-    isolate_registry.register(spec)
-    return spec
-
-
-@pytest.fixture
-def binomic(
+def make_client(
+    client_app: Path,
     config: BinomicConfig,
-    isolate_registry: TaskRegistry,
-) -> Binomic:
-    """An unstarted client resolving tasks against an isolated registry."""
+    fake_broker_backend: None,
+) -> Callable[..., Binomic]:
+    """Build a client over the sample app with a fakeredis backend."""
 
-    return Binomic(
-        broker_dsn="redis://localhost:6379/0",
-        module_name="binomic",
-        config=config,
-    )
+    root = str(client_app)
+    if root not in sys.path:
+        sys.path.insert(0, root)
 
+    def _make(module_name: str = "clientapp", **overrides: Any) -> Binomic:
 
-@pytest.fixture
-async def running_binomic(
-    binomic: Binomic,
-    config: BinomicConfig,
-    make_broker: Callable[..., AsyncredisBroker],
-    mocker: MockerFixture,
-) -> AsyncIterator[Binomic]:
-    """The client with its broker and scheduler started, ready to submit.
+        return Binomic(
+            broker_dsn="redis://localhost:6379/0",
+            module_name=module_name,
+            config=config,
+            **overrides,
+        )
 
-    Mirrors the initialization the client's context performs before it starts
-    the master: a full context cannot be entered from a fixture, because its
-    task group must be exited by the task that entered it. The broker resolves
-    its redis clients through ``make_broker``'s fakeredis wiring.
-    ``autodiscover`` is stubbed so the registry holds exactly what a test
-    registered: discovering `binomic` would also register the sample tasks
-    shipped in `binomic.tasks`.
-    """
-
-    make_broker(config.queues)  # for its fakeredis wiring, not the broker it builds
-    mocker.patch("binomic.client.autodiscover")
-
-    client = binomic
-    client._broker = BrokerFactory(client._broker_dsn, config.queues).create()
-    await client._broker.initialize()
-
-    scheduler = TaskScheduler()
-    scheduler.start()
-    client._scheduler = scheduler
-
-    yield client
-
-    scheduler.shutdown()
-    client._scheduler = None
-    await client._broker.aclose()
-    client._broker = None
+    return _make
 
 
-@pytest.fixture
-def scheduler(running_binomic: Binomic) -> AsyncIOScheduler:
-    """The APScheduler that backs the client's task scheduler.
+class TestConstruction:
+    def test_autodiscovers_the_module(self, make_client: Callable[..., Binomic]) -> None:
 
-    Reached through ``TaskScheduler``: it exposes no job accessor of its own.
-    """
+        client = make_client()
 
-    task_scheduler = running_binomic._scheduler
-    assert task_scheduler is not None
+        assert {"alpha", "later", "cronned", "ticked"} <= {
+            spec.name for spec in client._registry
+        }
 
-    return task_scheduler._scheduler
-
-
-class TestBinomicScheduling:
-    @pytest.mark.parametrize(
-        "spec_kwargs",
-        [
-            # A yearly crontab and a ten-minute interval keep the job from firing
-            # again on its own while the test runs.
-            pytest.param({"mode": "cron", "cron": "0 0 1 1 *"}, id="cron"),
-            pytest.param({"mode": "interval", "interval": 600.0}, id="interval"),
-        ],
-    )
-    async def test_a_registered_job_enqueues_its_message(
-        self,
-        running_binomic: Binomic,
-        scheduler: AsyncIOScheduler,
-        isolate_registry: TaskRegistry,
-        spec_kwargs: dict[str, Any],
+    def test_unknown_module_fails_construction(
+        self, make_client: Callable[..., Binomic]
     ) -> None:
 
-        isolate_registry.register(
-            TaskSpec(name="scheduled", queue="default", fn=lambda: None, **spec_kwargs)
-        )
+        with pytest.raises(ValueError, match="not found"):
+            make_client(module_name="no_such_pkg_xyz")
 
-        running_binomic._register_interval_cron_tasks()
-
-        (job,) = scheduler.get_jobs()
-        await job.func(*job.args)  # what the scheduler does when the job fires
-
-        broker = running_binomic._broker
-        assert broker is not None
-        (entry,) = await broker.acquire("tester", count=1)
-        msg = Message.from_json(entry.fields["message"])
-
-        assert entry.queue == "default"
-        assert msg.name == "scheduled"
-
-    async def test_a_context_registers_scheduled_tasks_only(
+class TestSubmit:
+    async def test_direct_enqueues_immediately(
         self,
-        binomic: Binomic,
-        isolate_registry: TaskRegistry,
-        mocker: MockerFixture,
-    ) -> None:
-
-        isolate_registry.register(
-            TaskSpec(
-                name="tick", queue="cron", fn=lambda: None, mode="cron", cron="* * * * *"
-            )
-        )
-        isolate_registry.register(
-            TaskSpec(
-                name="heartbeat",
-                queue="interval",
-                fn=lambda: None,
-                mode="interval",
-                interval=10.0,
-            )
-        )
-        isolate_registry.register(
-            TaskSpec(name="example", queue="default", fn=lambda: None)
-        )
-        isolate_registry.register(
-            TaskSpec(
-                name="later", queue="delay", fn=lambda: None, mode="delay", delay=5.0
-            )
-        )
-        mocker.patch("binomic.client.autodiscover")
-        stub_master(mocker)
-        factory = mocker.patch("binomic.client.BrokerFactory")
-        factory.return_value.create.return_value = mocker.AsyncMock()
-
-        async with binomic:
-            task_scheduler = binomic._scheduler
-            assert task_scheduler is not None
-            registered = task_scheduler._scheduler.get_jobs()
-            jobs = {job.args[0]: job for job in registered}
-
-        # Only the scheduled modes are registered, one job each.
-        assert len(registered) == 2
-        assert set(jobs) == {"cron", "interval"}
-        assert isinstance(jobs["cron"].trigger, CronTrigger)
-        assert isinstance(jobs["interval"].trigger, IntervalTrigger)
-        assert jobs["cron"].args[1].name == "tick"
-        assert jobs["interval"].args[1].name == "heartbeat"
-
-
-class TestBinomic:
-    async def test_a_failed_broker_initialization_closes_the_broker(
-        self,
-        binomic: Binomic,
-        mocker: MockerFixture,
-    ) -> None:
-
-        broker = mocker.AsyncMock()
-        broker.initialize.side_effect = RuntimeError("broker boom")
-        mocker.patch(
-            "binomic.client.BrokerFactory"
-        ).return_value.create.return_value = broker
-        stub_master(mocker)
-
-        with pytest.raises(RuntimeError, match="broker boom"):
-            async with binomic:
-                pass
-
-        broker.aclose.assert_awaited_once()
-        assert binomic._broker is None
-        assert binomic._scheduler is None
-
-    async def test_a_failed_scheduler_start_closes_the_broker(
-        self,
-        binomic: Binomic,
-        mocker: MockerFixture,
-    ) -> None:
-
-        broker = mocker.AsyncMock()
-        mocker.patch(
-            "binomic.client.BrokerFactory"
-        ).return_value.create.return_value = broker
-        scheduler = mocker.patch("binomic.client.TaskScheduler")
-        scheduler.return_value.start.side_effect = RuntimeError("scheduler boom")
-        stub_master(mocker)
-
-        with pytest.raises(RuntimeError, match="scheduler boom"):
-            async with binomic:
-                pass
-
-        broker.aclose.assert_awaited_once()
-        assert binomic._broker is None
-        assert binomic._scheduler is None
-
-    async def test_submit_rejects_a_client_that_never_started(
-        self,
-        binomic: Binomic,
-        noop_task: TaskSpec,
+        make_client: Callable[..., Binomic],
         make_message: Callable[..., Message],
     ) -> None:
 
-        with pytest.raises(RuntimeError, match="Broker not initialized"):
-            await binomic.submit(make_message())
+        client = make_client()
+        await client.start()
 
-    async def test_submit_rejects_a_delay_task_without_a_scheduler(
-        self,
-        binomic: Binomic,
-        isolate_registry: TaskRegistry,
-        make_message: Callable[..., Message],
-        mocker: MockerFixture,
-    ) -> None:
+        await client.submit(make_message(task="alpha"))
 
-        isolate_registry.register(
-            TaskSpec(
-                name="later", queue="default", fn=lambda: None, mode="delay", delay=5.0
-            )
+        broker = client._broker
+        assert isinstance(broker, RedisBroker)
+        entries = await broker._ensure_client().xrange(
+            f"{broker._group}:default:stream", "-", "+"
         )
-        binomic._broker = mocker.AsyncMock()  # broker up, scheduler still missing
+        assert entries is not None
+        assert len(entries) == 1
 
-        with pytest.raises(RuntimeError, match="Scheduler not initialized"):
-            await binomic.submit(make_message(name="later"))
+        await client.close()
 
-    @pytest.mark.parametrize(
-        "spec_kwargs",
-        [
-            pytest.param({"mode": "cron", "cron": "* * * * *"}, id="cron"),
-            pytest.param({"mode": "interval", "interval": 10.0}, id="interval"),
-        ],
-    )
-    async def test_submit_rejects_a_scheduled_task(
+    async def test_delay_schedules_instead_of_enqueueing(
         self,
-        binomic: Binomic,
-        isolate_registry: TaskRegistry,
+        make_client: Callable[..., Binomic],
         make_message: Callable[..., Message],
-        spec_kwargs: dict[str, Any],
     ) -> None:
 
-        isolate_registry.register(
-            TaskSpec(name="scheduled", queue="default", fn=lambda: None, **spec_kwargs)
+        client = make_client()
+        await client.start()
+
+        await client.submit(make_message(task="later"))
+
+        # No stream entry: the enqueue runs when the scheduled job fires.
+        broker = client._broker
+        assert isinstance(broker, RedisBroker)
+        entries = await broker._ensure_client().xrange(
+            f"{broker._group}:default:stream", "-", "+"
         )
+        assert entries == []
 
-        with pytest.raises(ValueError, match="only supports direct and delay"):
-            await binomic.submit(make_message(name="scheduled"))
+        scheduler = client._scheduler
+        assert scheduler is not None
+        underlying = scheduler._scheduler
+        assert underlying is not None
+        jobs = underlying.get_jobs()
+        assert len(jobs) == 1
+        assert jobs[0].func.__name__ == "enqueue"
+        # (queue, message) pair the job will enqueue with.
+        assert jobs[0].args[0] == "delayq"
+        assert jobs[0].args[1].task == "later"
 
-    async def test_submit_schedules_a_delay_task(
+        await client.close()
+
+    async def test_unknown_task_raises(
         self,
-        running_binomic: Binomic,
-        scheduler: AsyncIOScheduler,
-        isolate_registry: TaskRegistry,
+        make_client: Callable[..., Binomic],
         make_message: Callable[..., Message],
     ) -> None:
 
-        isolate_registry.register(
-            TaskSpec(
-                name="later", queue="default", fn=lambda: None, mode="delay", delay=30.0
-            )
-        )
-        msg = make_message(name="later")
+        client = make_client()
+        await client.start()
 
-        assert await running_binomic.submit(msg) == msg.id
+        with pytest.raises(TaskNotFoundError):
+            await client.submit(make_message(task="ghost"))
 
-        (job,) = scheduler.get_jobs()
-        assert isinstance(job.trigger, DateTrigger)
-        assert job.args == ("default", msg)
+        await client.close()
 
-    async def test_submit_builds_a_broker_on_context_entry(
+    async def test_scheduled_modes_are_not_submittable(
         self,
-        binomic: Binomic,
-        noop_task: TaskSpec,
-        mocker: MockerFixture,
+        make_client: Callable[..., Binomic],
         make_message: Callable[..., Message],
     ) -> None:
 
-        broker = mocker.AsyncMock()
-        factory = mocker.patch("binomic.client.BrokerFactory")
-        factory.return_value.create.return_value = broker
-        mocker.patch("binomic.client.autodiscover")
-        stub_master(mocker)
-        msg = make_message()
+        client = make_client()
+        await client.start()
 
-        async with binomic:
-            assert await binomic.submit(msg) == msg.id
+        with pytest.raises(ValueError, match="only supports"):
+            await client.submit(make_message(task="cronned"))
 
-        factory.assert_called_once_with("redis://localhost:6379/0", ["default"])
-        broker.enqueue.assert_awaited_once_with("default", msg)
+        await client.close()
 
-    async def test_submit_reuses_broker_instance(
+
+class TestContext:
+    async def test_registers_cron_and_interval_jobs(
         self,
-        binomic: Binomic,
-        noop_task: TaskSpec,
-        mocker: MockerFixture,
-        make_message: Callable[..., Message],
-    ) -> None:
-
-        broker = mocker.AsyncMock()
-        factory = mocker.patch("binomic.client.BrokerFactory")
-        factory.return_value.create.return_value = broker
-        mocker.patch("binomic.client.autodiscover")
-        stub_master(mocker)
-
-        async with binomic:
-            await binomic.submit(make_message())
-            await binomic.submit(make_message())
-
-        factory.assert_called_once()
-        assert broker.enqueue.await_count == 2
-
-
-class TestBinomicClose:
-    async def test_master_failure_still_closes_the_client(
-        self,
-        binomic: Binomic,
+        make_client: Callable[..., Binomic],
         mocker: MockerFixture,
     ) -> None:
+        """Entering the context registers every cron/interval task as a job
+        whose body enqueues the task's message; the Master is assembled but
+        mocked out here — real supervision is the integration suite's job."""
 
-        factory = mocker.patch("binomic.client.BrokerFactory")
-        factory.return_value.create.return_value = mocker.AsyncMock()
         master = mocker.Mock()
-        master.arun = mocker.AsyncMock()
-        master.aclose = mocker.AsyncMock(side_effect=RuntimeError("master boom"))
-        mocker.patch("binomic.client.Master", return_value=master)
+        master.start = mocker.AsyncMock()
+        master.close = mocker.AsyncMock()
+        mocker.patch("binomic.client.client.Master", return_value=master)
 
-        with pytest.raises(RuntimeError, match="master boom"):
-            async with binomic:
+        client = make_client()
+
+        async with client:
+            scheduler = client._scheduler
+            assert scheduler is not None
+            underlying = scheduler._scheduler
+            assert underlying is not None
+            jobs = underlying.get_jobs()
+            by_kind = sorted((type(job.trigger).__name__, job.args[0]) for job in jobs)
+            assert by_kind == [
+                ("CronTrigger", "cronq"),
+                ("IntervalTrigger", "cronq"),
+            ]
+
+            # Each periodic job carries a prebuilt Message for its task.
+            for job in jobs:
+                assert isinstance(job.args[1], Message)
+                assert job.args[1].task in {"cronned", "ticked"}
+
+        # Torn down: master first, then the client's own resources.
+        master.close.assert_awaited_once()
+        assert client._broker is None
+        assert client._scheduler is None
+
+    async def test_master_failure_propagates_and_still_closes(
+        self,
+        make_client: Callable[..., Binomic],
+        mocker: MockerFixture,
+    ) -> None:
+
+        master = mocker.Mock()
+        master.start = mocker.AsyncMock(side_effect=RuntimeError("boom"))
+        master.close = mocker.AsyncMock()
+        mocker.patch("binomic.client.client.Master", return_value=master)
+
+        client = make_client()
+
+        # anyio's task group wraps the child failure in an ExceptionGroup.
+        with pytest.raises(BaseExceptionGroup) as exc_info:
+            async with client:
                 pass
 
-        # A failing `master.aclose()` must not skip the client's own teardown.
-        assert binomic._broker is None
-        assert binomic._scheduler is None
+        assert any(
+            isinstance(exc, RuntimeError) and "boom" in str(exc)
+            for exc in exc_info.value.exceptions
+        )
+        master.close.assert_awaited_once()
+        assert client._broker is None
+
+    async def test_close_is_idempotent(
+        self, make_client: Callable[..., Binomic], mocker: MockerFixture
+    ) -> None:
+
+        master = mocker.Mock()
+        master.start = mocker.AsyncMock()
+        master.close = mocker.AsyncMock()
+        mocker.patch("binomic.client.client.Master", return_value=master)
+
+        client = make_client()
+
+        async with client:
+            pass
+
+        # Context exit already closed everything; a second close is a no-op.
+        await client.close()
+
+        assert client._broker is None
+        assert client._scheduler is None
+
+
+class TestStartClose:
+    async def test_start_wires_broker_and_scheduler(
+        self, make_client: Callable[..., Binomic]
+    ) -> None:
+
+        client = make_client()
+        await client.start()
+
+        assert isinstance(client._broker, RedisBroker)
+        assert client._broker._running
+        assert client._scheduler is not None
+
+        await client.close()
+
+    async def test_close_releases_everything(
+        self, make_client: Callable[..., Binomic]
+    ) -> None:
+
+        client = make_client()
+        await client.start()
+        await client.close()
+
+        assert client._broker is None
+        assert client._scheduler is None
 
 
 class TestBinomicFactory:
@@ -373,20 +292,19 @@ class TestBinomicFactory:
 
         factory = BinomicFactory(
             broker_dsn="redis://localhost:6379/0",
-            module_name="binomic",
+            module_name="clientapp",
             config=config,
         )
 
         assert factory.create() is factory.create()
 
-    def test_create_builds_binomic(self, config: BinomicConfig) -> None:
+    def test_create_builds_a_binomic(self, config: BinomicConfig) -> None:
 
-        factory = BinomicFactory(
+        client = BinomicFactory(
             broker_dsn="redis://localhost:6379/0",
-            module_name="binomic",
+            module_name="clientapp",
             config=config,
-        )
-
-        client = factory.create()
+        ).create()
 
         assert isinstance(client, Binomic)
+        assert client._module_name == "clientapp"

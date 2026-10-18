@@ -1,5 +1,5 @@
-from collections.abc import Awaitable, Callable, Mapping, Sequence
-from datetime import UTC, datetime, timedelta, tzinfo
+from collections.abc import Awaitable, Callable, Iterable, Mapping
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -8,51 +8,71 @@ from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 if TYPE_CHECKING:
-    from .registry import TaskSpec
+    from datetime import tzinfo
+
 
 __all__ = ("TaskScheduler",)
 
 
-_func = Callable[..., Any | Awaitable[Any]]
-
-
 class TaskScheduler:
-    """Scheduler class for Binomic tasks."""
+    """A thin APScheduler wrapper over generic callables.
 
-    def __init__(self, timezone: tzinfo = UTC) -> None:
+    ``delay``/``cron``/``interval`` register plain callables — task semantics
+    are validated at the call sites, not here. The client owns one instance
+    for delay submissions and cron/interval registrations; each worker handler
+    owns another for retry backoff only.
+    """
+
+    def __init__(self, timezone: "tzinfo" = UTC) -> None:
 
         self._timezone = timezone
+        self._scheduler: AsyncIOScheduler | None = None
 
-        self._scheduler = AsyncIOScheduler()
+        self._running = False
+
+    @property
+    def running(self) -> bool:
+
+        return self._running
 
     def start(self) -> None:
-        """Start the scheduler."""
 
-        self._scheduler.start()
+        if self._running:
+            return
 
-    def shutdown(self) -> None:
-        """Shutdown the scheduler."""
+        self._ensure_scheduler()
 
-        self._scheduler.shutdown()
+        self._running = True
+
+    def close(self) -> None:
+
+        if not self._running:
+            return
+
+        if self._scheduler is not None:
+            self._scheduler.shutdown(wait=False)
+            self._scheduler = None
+
+        self._running = False
+
+    def _ensure_scheduler(self) -> "AsyncIOScheduler":
+
+        if self._scheduler is None:
+            self._scheduler = AsyncIOScheduler()
+            self._scheduler.start()
+
+        return self._scheduler
 
     def delay(
         self,
-        func: _func,
-        spec: "TaskSpec",
+        func: Callable[..., Any | Awaitable[Any]],
         *,
-        delay: float | None = None,
-        args: Sequence[Any] | None = None,
+        delay: float,
+        args: Iterable[Any] | None = None,
         kwargs: Mapping[str, Any] | None = None,
     ) -> None:
-        """Delay a task."""
 
-        if delay is None and (spec.mode != "delay" or spec.delay is None):
-            raise ValueError("Task is not a delay task or lack `delay` value.")
-
-        if (delay := delay or spec.delay) is None or delay <= 0:
-            raise ValueError("Delay value must be greater than 0.")
-
-        self._scheduler.add_job(
+        self._ensure_scheduler().add_job(
             func=func,
             trigger=DateTrigger(
                 run_date=datetime.now(self._timezone) + timedelta(seconds=delay),
@@ -60,54 +80,41 @@ class TaskScheduler:
             ),
             args=args,
             kwargs=kwargs,
-            # A deferred job is work that must happen: one the scheduler only
-            # reaches late still fires, instead of being dropped as a missed run.
             misfire_grace_time=None,
         )
 
-    def interval(
+    def cron(
         self,
-        func: _func,
-        spec: "TaskSpec",
+        func: Callable[..., Any | Awaitable[Any]],
         *,
-        args: Sequence[Any] | None = None,
+        cron: str,
+        args: Iterable[Any] | None = None,
         kwargs: Mapping[str, Any] | None = None,
     ) -> None:
-        """Schedule a task to run at regular intervals."""
 
-        if spec.mode != "interval" or spec.interval is None:
-            raise ValueError("Task is not an interval task or lack `interval` value.")
-
-        if spec.interval <= 0:
-            raise ValueError("Interval value must be greater than 0.")
-
-        self._scheduler.add_job(
+        self._ensure_scheduler().add_job(
             func=func,
-            trigger=IntervalTrigger(
-                seconds=spec.interval,
+            trigger=CronTrigger.from_crontab(
+                expr=cron,
                 timezone=self._timezone,
             ),
             args=args,
             kwargs=kwargs,
         )
 
-    def cron(
+    def interval(
         self,
-        func: _func,
-        spec: "TaskSpec",
+        func: Callable[..., Any | Awaitable[Any]],
         *,
-        args: Sequence[Any] | None = None,
+        interval: float,
+        args: Iterable[Any] | None = None,
         kwargs: Mapping[str, Any] | None = None,
     ) -> None:
-        """Schedule a task to run at specific times."""
 
-        if spec.mode != "cron" or spec.cron is None:
-            raise ValueError("Task is not a cron task or lack `cron` value.")
-
-        self._scheduler.add_job(
+        self._ensure_scheduler().add_job(
             func=func,
-            trigger=CronTrigger.from_crontab(
-                spec.cron,
+            trigger=IntervalTrigger(
+                seconds=interval,
                 timezone=self._timezone,
             ),
             args=args,

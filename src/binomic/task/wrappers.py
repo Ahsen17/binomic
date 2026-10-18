@@ -1,20 +1,11 @@
+import contextlib
 import importlib
 import inspect
-import pkgutil
 from collections.abc import Callable
+from pathlib import Path
 from typing import Literal, overload
 
-import structlog
-
-from .registry import TaskSpec, registry
-
-__all__ = (
-    "autodiscover",
-    "task",
-)
-
-
-logger = structlog.stdlib.get_logger(__name__)
+from .register import TaskSpec
 
 
 @overload
@@ -55,93 +46,106 @@ def task[**P, T](
 def task[**P, T](
     queue: str,
     *,
-    mode: Literal["direct", "delay", "cron", "interval"] = "direct",
+    mode: Literal[
+        "direct",
+        "delay",
+        "cron",
+        "interval",
+    ] = "direct",
     delay: float | None = None,
     cron: str | None = None,
     interval: float | None = None,
 ) -> Callable[[Callable[P, T]], TaskSpec[P, T]]:
-    """Declare a task and register it under the function's lowercase name.
 
-    Mode ``direct`` executes on submit, ``delay`` schedules execution
-    ``delay`` seconds after submit, ``cron`` repeats execution on the given
-    cron expression, and ``interval`` repeats it every ``interval`` seconds.
+    match mode:
+        case "delay":
+            if delay is None or delay <= 0:
+                raise ValueError(
+                    "`delay` must be a positive number",
+                )
 
-    Raises:
-        ValueError: if ``delay``, ``cron`` or ``interval`` mode lacks its
-            required argument, or if a ``cron`` or ``interval`` task's
-            function takes parameters.
-    """
+        case "cron":
+            if cron is None:
+                raise ValueError(
+                    "`cron` must be a valid cron expression",
+                )
 
-    if mode == "delay" and delay is None:
-        raise ValueError("delay must be specified for delay mode")
-    if mode == "cron" and cron is None:
-        raise ValueError("cron must be specified for cron mode")
-    if mode == "interval" and interval is None:
-        raise ValueError("interval must be specified for interval mode")
+        case "interval":
+            if interval is None or interval <= 0:
+                raise ValueError(
+                    "`interval` must be a positive number",
+                )
 
     def decorator(fn: Callable[P, T]) -> TaskSpec[P, T]:
 
-        if mode == "cron" or mode == "interval":
+        if mode in ("cron", "interval"):
             sig = inspect.signature(fn)
             if len(sig.parameters.values()) > 0:
-                raise ValueError("Cron/Interval mode requires no arguments.")
+                raise ValueError(
+                    "Cron/Interval tasks must not have any parameters",
+                )
 
-        registry.register(
-            spec := TaskSpec(
-                name=fn.__name__.lower(),
-                queue=queue,
-                fn=fn,
-                mode=mode,
-                delay=delay,
-                cron=cron,
-                interval=interval,
-            )
+        return TaskSpec(
+            name=fn.__name__,
+            queue=queue,
+            func=fn,
+            mode=mode,
+            delay=delay,
+            cron=cron,
+            interval=interval,
         )
-        return spec
 
     return decorator
 
 
-def autodiscover(
-    package: str,
-    *,
-    on_error: Literal["warn", "raise"] = "warn",
-) -> list[str]:
-    """Import every ``tasks`` module inside package to trigger registration.
+def autodiscover(package: str) -> list[TaskSpec]:
+    """Import every ``tasks`` module under ``package`` and collect its specs.
 
-    Returns the names of the imported modules; a failing module import is
-    warned or raised depending on ``on_error``.
+    A tasks module is a ``tasks.py`` or ``tasks/__init__.py`` at any depth
+    below the package. A missing package raises; a module whose import fails
+    on a missing import is skipped, and any other error propagates.
     """
 
     try:
         pkg = importlib.import_module(package)
-    except ModuleNotFoundError:
-        logger.warning(
-            "Package not found, skipping task discovery.",
-            package=package,
-        )
+    except ModuleNotFoundError as err:
+        if err.name == package:
+            raise ValueError(f"Package `{package}` not found") from err
+        raise
+
+    pkg_paths = getattr(pkg, "__path__", None)
+    if pkg_paths is None:
         return []
 
-    if not hasattr(pkg, "__path__"):
-        logger.warning(
-            "Target path is not a package, cannot recurse",
-            package=package,
-        )
-        return []
+    seen: set[int] = set()
+    specs: list[TaskSpec] = []
 
-    imported: list[str] = []
-
-    for module_info in pkgutil.walk_packages(pkg.__path__, prefix=f"{package}."):
-        if module_info.name.rsplit(".", 1)[-1] != "tasks":
+    for raw_path in pkg_paths:
+        pkg_root = Path(raw_path).resolve()
+        if not pkg_root.exists():
             continue
 
-        try:
-            importlib.import_module(module_info.name)
-            imported.append(module_info.name)
-        except Exception:
-            if on_error == "raise":
-                raise
-            if on_error == "warn":
-                logger.warning("Failed to import task module.", module=module_info.name)
+        files: list[Path] = []
+        files.extend(pkg_root.rglob("tasks.py"))
+        files.extend(pkg_root.rglob("tasks/__init__.py"))
 
-    return imported
+        for path in files:
+            rel_path = path.relative_to(pkg_root)
+            parts = list(rel_path.parts)
+
+            if parts[-1] == "__init__.py":
+                module_parts = [package, *parts[:-1]]
+            else:
+                module_parts = [package, *parts[:-1], path.stem]
+
+            module_name = ".".join(module_parts)
+
+            with contextlib.suppress(ImportError):
+                module = importlib.import_module(module_name)
+
+                for obj in vars(module).values():
+                    if isinstance(obj, TaskSpec) and id(obj) not in seen:
+                        seen.add(id(obj))
+                        specs.append(obj)
+
+    return specs

@@ -1,5 +1,5 @@
 from .exceptions import DuplicateTaskError, TaskNotFoundError
-from .registry import TaskRegistry, TaskSpec
+from .register import TaskRegistry, TaskSpec
 from .scheduler import TaskScheduler
 from .wrappers import autodiscover, task
 

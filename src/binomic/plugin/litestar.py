@@ -5,17 +5,17 @@ from typing import TYPE_CHECKING, ClassVar, cast
 from binomic.client import Binomic, BinomicFactory
 
 if TYPE_CHECKING:
-    from binomic.config import BinomicConfig
+    from binomic.client import BinomicConfig
 
 try:
     import litestar  # noqa: F401
-    from litestar.di import Provide
-    from litestar.plugins import InitPluginProtocol
+    from litestar.di import Provide  # pyright: ignore[reportMissingImports]
+    from litestar.plugins import InitPluginProtocol  # pyright: ignore[reportMissingImports]
 
     if TYPE_CHECKING:
-        from litestar import Litestar
-        from litestar.config.app import AppConfig
-        from litestar.datastructures import State
+        from litestar import Litestar  # pyright: ignore[reportMissingImports]
+        from litestar.config.app import AppConfig  # pyright: ignore[reportMissingImports]
+        from litestar.datastructures import State  # pyright: ignore[reportMissingImports]
 
 except ImportError:
     raise ImportError(  # noqa: B904
@@ -71,12 +71,8 @@ class BinomicPlugin(InitPluginProtocol):
 
         binomic = self.provide_binomic(app.state)
 
-        try:
-            async with binomic:
-                yield
-
-        finally:
-            await binomic.aclose()
+        async with binomic:
+            yield
 
     def setup_signature_namespaces(self, app_config: "AppConfig") -> None:
 

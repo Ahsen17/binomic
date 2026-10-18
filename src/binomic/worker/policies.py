@@ -7,7 +7,7 @@ __all__ = (
 
 
 class WorkerPolicy(BaseStruct):
-    """Binomic worker policy."""
+    """Bonimic worker policy."""
 
     queues: list[str]
     concurrency: int
@@ -21,7 +21,7 @@ class WorkerPolicy(BaseStruct):
 
 
 class MasterPolicy(BaseStruct):
-    """Binomic master policy."""
+    """Bonimic master policy."""
 
     workers: int
-    worker: WorkerPolicy
+    worker_policy: WorkerPolicy

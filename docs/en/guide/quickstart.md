@@ -40,8 +40,8 @@ def poll() -> None: ...
 ```
 
 The first positional argument is the **queue name** and must match a queue in
-the client's `queues` configuration. Tasks are registered under the
-**lowercase form of the function name** (`example`, `delayed`, `periodic`, and
+the client's `queues` configuration. Tasks are registered under the function
+name **as written** (case-sensitive: `example`, `delayed`, `periodic`, and
 `poll` above), which is how you refer to a task when submitting it.
 
 Functions in the two periodic modes, `cron` and `interval`, **take no
@@ -53,13 +53,8 @@ four modes.
 ## Start and submit
 
 ```python
-from binomic.client import Binomic, BinomicFactory
-from binomic.config import BinomicConfig
-from binomic.message import Message
-from binomic.task import autodiscover
-
-# Discover and register every tasks.py module inside the myapp package
-autodiscover("myapp")
+from binomic.client import Binomic, BinomicConfig, BinomicFactory
+from binomic.broker import Message
 
 factory = BinomicFactory(
     broker_dsn="redis://localhost:6379/0",
@@ -70,9 +65,10 @@ factory = BinomicFactory(
 binomic: Binomic = factory.create()
 
 # Entering the context starts the master (spawning worker subprocesses)
-# and exposes the submission entry point
+# and exposes the submission entry point; construction has already
+# discovered and registered every tasks.py module inside myapp
 async with binomic:
-    await binomic.submit(Message(name="example", args=[1]))
+    await binomic.submit(Message(task="example", args=[1]))
 ```
 
 - `broker_dsn` is the **only** Redis connection you supply: both delivery and
@@ -82,11 +78,10 @@ async with binomic:
   master spawns, `concurrency` is the number of tasks each worker runs
   concurrently, and `max_attempts` is the attempt budget for a single message —
   see [Reliability](reliability.md) for its semantics;
-- a `Message`'s `name` is the task name and `args` / `kwargs` carry the call
+- a `Message`'s `task` is the task name and `args` / `kwargs` carry the call
   arguments (the example above calls `example` with `index=1`). Which stream a
   message lands in is decided by the **queue in the task declaration** — a
   message neither needs nor can specify a queue;
-- `enqueued_at` needs no manual assignment: the client writes it -- onto the
-  message's stream entry, not the `Message` itself -- at the moment of
-  **actual delivery**, which is also why delay and periodic tasks see the
-  current time on every delivery.
+- `enqueued_at` needs no manual assignment: the client stamps it -- not onto
+  the `Message` itself -- at the moment of **actual delivery**, which is also
+  why delay and periodic tasks see the current time on every delivery.

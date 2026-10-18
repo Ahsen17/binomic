@@ -1,105 +1,115 @@
-import logging
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from binomic.task.registry import TaskRegistry, TaskSpec, registry
+from binomic.task import TaskRegistry, TaskSpec
 from binomic.task.wrappers import autodiscover, task
 
 
 class TestTaskDecorator:
-    def test_registers_lowercase_name(self, isolate_registry: TaskRegistry) -> None:
+    def test_produces_a_spec_without_global_registration(self) -> None:
+        """The decorator returns a TaskSpec; registration happens wherever the
+        caller keeps it (client/handler each own a TaskRegistry)."""
+
+        @task("default", mode="direct")
+        def do_work() -> str:
+            return "ok"
+
+        assert isinstance(do_work, TaskSpec)
+        assert do_work.name == "do_work"  # no lower-casing any more
+        assert do_work.queue == "default"
+        assert do_work.mode == "direct"
+        assert do_work.func() == "ok"
+
+    def test_preserves_casing(self) -> None:
 
         @task("default", mode="direct")
         def DoWork() -> str:
             return "ok"
 
-        assert "dowork" in isolate_registry
-        assert isinstance(DoWork, TaskSpec)
-        assert DoWork.name == "dowork"
-        assert DoWork.queue == "default"
+        assert DoWork.name == "DoWork"
 
-    async def test_decorated_object_is_callable(
-        self, isolate_registry: TaskRegistry
-    ) -> None:
+    async def test_decorated_object_is_callable(self) -> None:
 
         @task("default", mode="direct")
         def alpha() -> str:
             return "ok"
 
-        assert alpha.mode == "direct"
         assert await alpha() == "ok"
 
     def test_delay_mode_requires_delay(self) -> None:
 
-        # The overloads reject this call statically, so it is only reachable from
-        # untyped callers; the runtime guard still has to hold for those.
-        declare: Callable[..., Any] = task
+        declare: Any = task
 
-        with pytest.raises(ValueError, match="delay must be specified"):
+        with pytest.raises(ValueError, match="must be a positive number"):
             declare("default", mode="delay")
 
-    def test_cron_mode_requires_cron(self) -> None:
-
-        declare: Callable[..., Any] = task
-
-        with pytest.raises(ValueError, match="cron must be specified"):
-            declare("default", mode="cron")
-
-    def test_delay_mode_accepts_delay(self, isolate_registry: TaskRegistry) -> None:
+    def test_delay_mode_accepts_delay(self) -> None:
 
         @task("default", mode="delay", delay=5.0)
         def later() -> None: ...
 
-        registered = registry.get("later")
+        assert later.mode == "delay"
+        assert later.delay == 5.0
 
-        assert registered.mode == "delay"
-        assert registered.delay == 5.0
+    def test_cron_mode_requires_cron(self) -> None:
 
-    def test_cron_mode_accepts_cron(self, isolate_registry: TaskRegistry) -> None:
+        declare: Any = task
+
+        with pytest.raises(ValueError, match="must be a valid cron expression"):
+            declare("default", mode="cron")
+
+    def test_cron_mode_accepts_cron(self) -> None:
 
         @task("default", mode="cron", cron="* * * * *")
         def scheduled() -> None: ...
 
-        registered = registry.get("scheduled")
-
-        assert registered.mode == "cron"
-        assert registered.cron == "* * * * *"
-
-    def test_cron_mode_rejects_parameterized_fn(
-        self, isolate_registry: TaskRegistry
-    ) -> None:
-
-        with pytest.raises(ValueError, match="Cron/Interval mode requires no arguments"):
-
-            @task("default", mode="cron", cron="* * * * *")
-            def scheduled_twice(value: int) -> None: ...
+        assert scheduled.mode == "cron"
+        assert scheduled.cron == "* * * * *"
 
     def test_interval_mode_requires_interval(self) -> None:
 
-        declare: Callable[..., Any] = task
+        declare: Any = task
 
-        with pytest.raises(ValueError, match="interval must be specified"):
+        with pytest.raises(ValueError, match="must be a positive number"):
             declare("default", mode="interval")
 
-    def test_interval_mode_accepts_interval(self, isolate_registry: TaskRegistry) -> None:
+    def test_interval_mode_accepts_interval(self) -> None:
 
         @task("default", mode="interval", interval=10.0)
         def heartbeat() -> None: ...
 
-        registered = registry.get("heartbeat")
+        assert heartbeat.mode == "interval"
+        assert heartbeat.interval == 10.0
 
-        assert registered.mode == "interval"
-        assert registered.interval == 10.0
-        assert registered.queue == "default"
+    def test_parameterized_direct_task_is_accepted(self) -> None:
+        """Only cron/interval forbid parameters: parameterized direct/delay
+        tasks are the framework's core use case (args ride the Message)."""
 
-    def test_interval_mode_rejects_parameterized_fn(
-        self, isolate_registry: TaskRegistry
-    ) -> None:
+        @task("default", mode="direct")
+        def work(value: int, label: str = "x") -> int:
+            return value
 
-        with pytest.raises(ValueError, match="Cron/Interval mode requires no arguments"):
+        assert work.func(3) == 3
+
+    def test_parameterized_delay_task_is_accepted(self) -> None:
+
+        @task("default", mode="delay", delay=1.0)
+        def later(value: int) -> None: ...
+
+        assert later.func(1) is None
+
+    def test_cron_mode_rejects_parameterized_fn(self) -> None:
+
+        with pytest.raises(ValueError, match="must not have any parameters"):
+
+            @task("default", mode="cron", cron="* * * * *")
+            def scheduled_twice(value: int) -> None: ...
+
+    def test_interval_mode_rejects_parameterized_fn(self) -> None:
+
+        with pytest.raises(ValueError, match="must not have any parameters"):
 
             @task("default", mode="interval", interval=10.0)
             def heartbeat_twice(value: int) -> None: ...
@@ -120,11 +130,8 @@ def make_package(
 
 
 class TestAutodiscover:
-    def test_imports_tasks_modules(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        isolate_registry: TaskRegistry,
+    def test_returns_specs_from_tasks_modules(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
 
         make_package(
@@ -132,38 +139,49 @@ class TestAutodiscover:
             monkeypatch,
             "fakeapp",
             "from binomic.task import task\n\n\n"
-            '@task("default", mode="direct")\ndef alpha() -> None: ...\n',
+            '@task("default", mode="direct")\n'
+            "def alpha() -> None: ...\n"
+            '@task("default", mode="direct")\n'
+            "def beta() -> None: ...\n",
         )
 
-        assert autodiscover("fakeapp") == ["fakeapp.tasks"]
-        assert "alpha" in isolate_registry
+        specs = autodiscover("fakeapp")
 
-    def test_missing_package_warns_and_returns_empty(
-        self,
-        caplog: pytest.LogCaptureFixture,
+        assert sorted(spec.name for spec in specs) == ["alpha", "beta"]
+        assert all(isinstance(spec, TaskSpec) for spec in specs)
+
+    def test_finds_nested_tasks_modules(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
 
-        with caplog.at_level(logging.WARNING):
-            imported = autodiscover("no_such_pkg_anywhere")
+        pkg = tmp_path / "nestedapp"
+        (pkg / "sub").mkdir(parents=True)
+        (pkg / "__init__.py").touch()
+        (pkg / "sub" / "__init__.py").touch()
+        (pkg / "sub" / "tasks.py").write_text(
+            "from binomic.task import task\n\n\n"
+            '@task("default", mode="direct")\n'
+            "def deep() -> None: ...\n",
+            encoding="utf-8",
+        )
+        monkeypatch.syspath_prepend(tmp_path)
 
-        assert imported == []
-        assert any("not found" in r.message for r in caplog.records)
+        specs = autodiscover("nestedapp")
 
-    def test_plain_module_cannot_be_recursed(
-        self,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
+        assert [spec.name for spec in specs] == ["deep"]
 
-        with caplog.at_level(logging.WARNING):
-            imported = autodiscover("binomic.client")
+    def test_missing_package_raises(self) -> None:
 
-        assert imported == []
-        assert any("not a package" in r.message for r in caplog.records)
+        with pytest.raises(ValueError, match="not found"):
+            autodiscover("no_such_pkg_anywhere")
+
+    def test_plain_module_returns_empty(self) -> None:
+        """A single module has no ``__path__`` to recurse — silently empty."""
+
+        assert autodiscover("binomic.client") == []
 
     def test_skips_modules_with_other_names(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
 
         pkg = tmp_path / "quietapp"
@@ -174,28 +192,45 @@ class TestAutodiscover:
 
         assert autodiscover("quietapp") == []
 
-    def test_broken_module_warns_by_default(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
+    def test_import_error_in_a_tasks_module_is_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """One bad module must not take down discovery (fail-soft, matching
+        the historical ``on_error="warn"`` spirit)."""
 
-        make_package(tmp_path, monkeypatch, "brokenapp", "raise RuntimeError('boom')\n")
+        make_package(
+            tmp_path,
+            monkeypatch,
+            "halfbroken",
+            "from binomic.task import task\n"
+            "import no_such_dependency_xyz\n\n\n"
+            '@task("default", mode="direct")\n'
+            "def good() -> None: ...\n",
+        )
 
-        with caplog.at_level(logging.WARNING):
-            imported = autodiscover("brokenapp")
+        assert autodiscover("halfbroken") == []
 
-        assert imported == []
-        assert any("Failed to import" in r.message for r in caplog.records)
-
-    def test_broken_module_raises_on_demand(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
+    def test_non_import_error_still_propagates(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Genuinely broken code (syntax errors, raise at import) fails fast —
+        only import-resolution failures are skipped."""
 
-        make_package(tmp_path, monkeypatch, "brokenapp2", "raise RuntimeError('boom')\n")
+        make_package(
+            tmp_path,
+            monkeypatch,
+            "brokenapp",
+            "raise RuntimeError('boom')\n",
+        )
 
         with pytest.raises(RuntimeError, match="boom"):
-            autodiscover("brokenapp2", on_error="raise")
+            autodiscover("brokenapp")
+
+
+class TestDiscoveryDoesNotTouchGlobalState:
+    def test_no_registry_is_created_or_filled(self) -> None:
+        """Discovery is pure: it returns specs, the caller registers them."""
+
+        registry = TaskRegistry()
+
+        assert len(registry) == 0

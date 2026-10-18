@@ -13,15 +13,15 @@ import anyio
 import pytest
 from redis.asyncio import Redis as AsyncRedis
 
-from binomic.client import Binomic
-from binomic.config import BinomicConfig
-from binomic.message import Message
+from binomic.broker import Message
+from binomic.client import Binomic, BinomicConfig
 from test_integration.schedule import DELAY_SECONDS, SCHEDULE_QUEUE
 from test_integration.schedule.tasks import DSN_ENV, KEY_ENV
 
 TIMEOUT: float = 30.0
-STREAM_KEY: str = f"binomic:{SCHEDULE_QUEUE}"
-GROUP: str = "binomic"
+# The client and the workers both derive the namespace from module_name.
+STREAM_KEY: str = f"test_integration.schedule:{SCHEDULE_QUEUE}:stream"
+GROUP: str = "test_integration.schedule"
 
 
 async def wait_until(
@@ -61,14 +61,18 @@ class TestSchedulePipeline:
         result_key = f"binomic:e2e:delayed:{uuid4()}"
 
         async with make_client(broker_dsn) as client:
-            started = time.monotonic()
+            # Measured on the wall clock, because that is the clock the
+            # scheduler fires on: a forward NTP jump between submit and fire
+            # would make the job trigger early by the monotonic measure, while
+            # wall time -- the scheduler's own accounting -- still reads ~3s.
+            started = time.time()
             await client.submit(
-                Message(name="write_delayed_result", args=[probe_dsn, result_key]),
+                Message(task="write_delayed_result", args=[probe_dsn, result_key]),
             )
 
             # Nothing here calls the job: firing it is the scheduler's.
             await wait_until(lambda: redis_client.exists(result_key))
-            elapsed = time.monotonic() - started
+            elapsed = time.time() - started
 
             # The task may only have run after its delay. A scheduler that
             # ignored the delay would fire on its next tick instead, well under

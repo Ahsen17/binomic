@@ -1,5 +1,5 @@
 from binomic.base import BaseStruct
-from binomic.worker.schemas import MasterPolicy, WorkerPolicy
+from binomic.worker import MasterPolicy, WorkerPolicy
 
 
 class TestWorkerPolicy:
@@ -25,11 +25,12 @@ class TestWorkerPolicy:
 class TestMasterPolicy:
     def test_wraps_worker_policy(self, worker_policy: WorkerPolicy) -> None:
 
-        policy = MasterPolicy(workers=2, worker=worker_policy)
+        policy = MasterPolicy(workers=2, worker_policy=worker_policy)
 
         assert policy.workers == 2
-        assert policy.worker is worker_policy
+        assert policy.worker_policy is worker_policy
 
     def test_is_base_struct(self) -> None:
 
         assert issubclass(MasterPolicy, BaseStruct)
+        assert issubclass(WorkerPolicy, BaseStruct)

@@ -32,7 +32,6 @@ dev = [
     "git-cliff",
 ]
 docs = [
-  "litestar",
   "myst-parser",
   "shibuya",
   "sphinx",
@@ -52,7 +51,7 @@ lint = [
 ]
 test = [
   "coverage",
-  "fakeredis",
+  "fakeredis[lua]",
   "pytest",
   "pytest-asyncio",
   "pytest-cov",
@@ -67,7 +66,6 @@ default-groups = "all"
 src = ["src", "tests", "test_integration"]
 line-length = 90
 target-version = "py312"
-
 
 [tool.ruff.lint]
 extend-select = [
@@ -217,17 +215,17 @@ enable_error_code = [
 show_error_codes = true
 pretty = true
 
-# APScheduler ships neither stubs nor a `py.typed` marker. Its surface is small
-# and exercised by the client tests, so it is not worth tracking down stubs.
 [[tool.mypy.overrides]]
 module = ["apscheduler.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = ["litestar.*", "binomic.plugin.litestar"]
+ignore_missing_imports = true
+disallow_subclassing_any = false
+
 [tool.pytest.ini_options]
 addopts = ["--import-mode=importlib", "--asyncio-mode=auto"]
-# `import-mode=importlib` makes test packages importable through `sys.modules`
-# only. A spawned worker resolves `module_name` in a fresh interpreter, so the
-# repository root has to be on `sys.path` for it to find the test task module.
 pythonpath = ["."]
 markers = [
   "pg: integration tests that require a real PostgreSQL (set DAB_TEST_PG_DSN to enable)",

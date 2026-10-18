@@ -66,5 +66,10 @@ async def redis_client(probe_dsn: str) -> AsyncIterator[AsyncRedis]:
         await client.aclose()
         pytest.skip(f"Real Redis unavailable at {probe_dsn}: {err}")
     yield client
+
+    # The teardown is the cleanup guarantee: every key this test's pipelines
+    # created — streams, payload hashes and DLQ keys alike — lives on this
+    # test's exclusive database, so one flush removes the whole namespace even
+    # when the test itself failed.
     await client.flushdb()
     await client.aclose()

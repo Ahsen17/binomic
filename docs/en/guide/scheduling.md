@@ -17,8 +17,8 @@ def example(index: int = 0) -> None: ...
 
 The first positional argument is the **queue name** and must match a queue in
 `BinomicConfig`'s `queues`; `mode` is keyword-only and defaults to `"direct"`.
-Tasks are registered under the **lowercase form of the function name**, which
-is how you refer to a task when submitting it; names are unique within the
+Tasks are registered under the function name **as written** (case-sensitive),
+which is how you refer to a task when submitting it; names are unique within the
 registry, so registering a second task under the same name raises
 `DuplicateTaskError`.
 
@@ -55,9 +55,10 @@ anything invalid:
   pass (see the next section for why).
 
 Delay and interval values only have to be **positive**, and that is checked by
-the scheduler at **submit / schedule time**, not at declaration time (which
-only checks that the arguments are present) — see "Using the scheduler
-directly" below.
+the decorator at **declaration time** (`delay` / `interval` `<= 0` raises
+`ValueError`). `TaskScheduler` itself is a generic callable wrapper that knows
+nothing about task semantics, so it performs no such validation — see "Using
+the scheduler directly" below.
 
 ```{note}
 `cron` and `interval` fire according to the **scheduler's timezone**, which
@@ -83,11 +84,11 @@ message lands in is decided by the **queue in the task declaration**; `submit`
 does not take a caller-specified queue.
 
 ```python
-from binomic.message import Message
+from binomic.broker import Message
 
 # `binomic` is built as shown in the quick start
 async with binomic:
-    await binomic.submit(Message(name="example", args=[1]))
+    await binomic.submit(Message(task="example", args=[1]))
 ```
 
 ## Registering periodic tasks
@@ -105,11 +106,7 @@ call arguments, so a periodic task must be a function that takes none.
 ```python
 import asyncio
 
-from binomic.task import TaskScheduler, task
-
-
-@task("default", mode="delay", delay=5)
-def reminder_delay() -> None: ...
+from binomic.task import TaskScheduler
 
 
 def send_reminder(user_id: str) -> None:
@@ -119,18 +116,18 @@ def send_reminder(user_id: str) -> None:
 async def main() -> None:
     scheduler = TaskScheduler()
     scheduler.start()  # requires a running event loop
-    scheduler.delay(func=send_reminder, spec=reminder_delay, args=("u-1",))
+    scheduler.delay(func=send_reminder, delay=5.0, args=("u-1",))
 
     await asyncio.sleep(6)  # wait for the job to come due
-    scheduler.shutdown()
+    scheduler.close()
 
 
 asyncio.run(main())
 ```
 
-Here `reminder_delay` only supplies the timing parameter ("delay 5 seconds") and
-the validation; the callable actually invoked is `send_reminder`, passed as
-`func`.
+`TaskScheduler` takes plain callables and knows nothing about `TaskSpec`: the
+delay, cron expression and interval are supplied by the caller, and `func` is
+invoked as-is when a job is due.
 
 - **Requires a running event loop**: `TaskScheduler` is built on APScheduler's
   `AsyncIOScheduler`, which captures the current event loop in place when
@@ -140,29 +137,26 @@ the validation; the callable actually invoked is `send_reminder`, passed as
   satisfies this naturally, since it starts the scheduler inside its own loop).
 - **Construction**: `TaskScheduler(timezone=UTC)`, with UTC as the default
   timezone; the triggers created by all three methods use that timezone.
-- **Where `spec` comes from**: the return value of the `@task(...)` decorator
-  is a `TaskSpec`; it supplies the timing parameters (`delay` / `cron` /
-  `interval`) and participates in validation.
-- **Methods**: `delay(func, spec, *, delay=None, args=None, kwargs=None)`,
-  `interval(...)`, and `cron(...)` are all **synchronous methods**; `func` is the
-  callable to invoke when a job is due, and `args` / `kwargs` are passed through
-  to it unchanged. `delay` takes one extra optional keyword, `delay`: when given
-  it is used as the number of seconds directly and the "`spec` must be a delay
-  task" check is **skipped** — this is what lets a worker's failed redelivery
-  defer a `spec` that is not a delay task at all (see
-  [Reliability](reliability.md)).
-- **Validation**: a `ValueError` is raised if `spec`'s mode does not match the
-  method called, or if the corresponding value is missing (for example
-  ``Task is not a delay task or lack `delay` value.`` — only when no explicit
-  `delay` was given). `delay` and `interval` also raise `ValueError` when the
-  value is `<= 0` (``... must be greater than 0.``); `cron` has no positivity
-  check — a cron expression has no notion of "non-positive".
-- **Lifecycle**: jobs only start firing after `start()` is called, and
-  `shutdown()` stops them. Both are synchronous methods. Note that calling
-  `shutdown()` immediately after scheduling leaves no time for the job to fire
+- **Methods**: `delay(func, *, delay, args=None, kwargs=None)`,
+  `cron(func, *, cron, args=None, kwargs=None)`, and
+  `interval(func, *, interval, args=None, kwargs=None)` are all **synchronous
+  methods**; `func` is the callable to invoke when a job is due, and `args` /
+  `kwargs` are passed through to it unchanged. The scheduler knows nothing
+  about task semantics; an invalid timing value surfaces as a trigger
+  construction error from APScheduler.
+- **Where validation lives**: task semantics (mode, required arguments,
+  positivity) are checked by the `@task` decorator at **declaration time** and
+  re-checked by `Binomic.submit` at **submission time**; the scheduler only
+  schedules. A worker's failed redelivery calls `scheduler.delay` directly to
+  defer `broker.retry` (see [Reliability](reliability.md)).
+- **Lifecycle**: jobs only start firing after `start()` is called, and `close()`
+  stops them. Both are synchronous methods; `close()` stops the underlying
+  `AsyncIOScheduler` on the next tick of the event loop. Note that calling
+  `close()` immediately after scheduling leaves no time for the job to fire
   (the example above waits with `await asyncio.sleep(6)`).
-- **A late job still runs**: deferred jobs are scheduled with
+- **A late job still runs**: jobs scheduled through `delay` carry
   `misfire_grace_time=None`, so even when the scheduler only gets around to one
   after its `run_date` (the event loop was busy, or the process stalled), it
   still fires instead of being discarded as a missed run — a deferred delivery
-  stands for work that must happen.
+  stands for work that must happen; `cron` / `interval` keep APScheduler's
+  default grace.

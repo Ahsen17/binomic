@@ -15,8 +15,9 @@ fleet with a master process. Message payloads are JSON-serialized with
   modes; see [Task modes and scheduling](guide/scheduling.md)
 - **Redis Streams broker**: reliable delivery based on consumer groups and the
   PEL, with `xautoclaim` reclaiming messages from lost consumers
-- **Retries**: failed or overdue messages are redelivered after a backoff, up to
-  `max_attempts` (3 by default); see [Reliability](guide/reliability.md)
+- **Retries and dead-letter queue**: failed messages are redelivered after a
+  backoff, up to `max_attempts` (3 by default); timed-out, stale and exhausted
+  messages land in the DLQ -- see [Reliability](guide/reliability.md)
 - **Multiprocessing workers**: the master spawns worker subprocesses and keeps
   supervising them with presence heartbeats -- carried over **inter-process
   IPC** rather than Redis, so beyond `is_alive()` it also sees a process that is

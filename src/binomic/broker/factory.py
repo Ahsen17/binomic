@@ -1,6 +1,6 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from .redis import AsyncredisBroker
+from .redis import RedisBroker
 
 if TYPE_CHECKING:
     from .protocols import Broker
@@ -15,19 +15,24 @@ class BrokerFactory:
         self,
         dsn: str,
         queues: list[str],
+        namespace: str,
+        **config: Any,
     ) -> None:
 
         self._dsn = dsn
         self._queues = queues
+        self._namespace = namespace
+        self._config = config
 
     def create(self) -> "Broker":
 
         match self._dsn.split(":")[0]:
             case "redis":
-                return AsyncredisBroker(
+                return RedisBroker(
                     dsn=self._dsn,
                     queues=self._queues,
-                    decode_responses=True,
+                    namespace=self._namespace,
+                    **self._config,
                 )
 
             case "amqp":

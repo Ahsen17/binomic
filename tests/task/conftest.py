@@ -5,14 +5,21 @@ from typing import Any
 
 import pytest
 
-from binomic.task.registry import TaskRegistry, TaskSpec
+from binomic.task import TaskRegistry, TaskSpec
+
+
+@pytest.fixture
+def registry() -> TaskRegistry:
+    """A fresh per-test registry — the new design has no module-level one."""
+
+    return TaskRegistry()
 
 
 @pytest.fixture
 def register_spec(
-    isolate_registry: TaskRegistry,
+    registry: TaskRegistry,
 ) -> Callable[..., TaskSpec]:
-    """Register ad-hoc task specs with automatic teardown via isolate_registry."""
+    """Register ad-hoc task specs into the per-test registry."""
 
     def _register(
         name: str,
@@ -21,8 +28,8 @@ def register_spec(
         **spec_kwargs: Any,
     ) -> TaskSpec:
 
-        spec = TaskSpec(name=name, queue=queue, fn=fn, **spec_kwargs)
-        isolate_registry.register(spec)
+        spec = TaskSpec(name=name, queue=queue, func=fn, **spec_kwargs)
+        registry.register(spec)
         return spec
 
     return _register

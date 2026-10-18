@@ -1,6 +1,7 @@
+from .handler import WorkerHandler
 from .master import Master
+from .policies import MasterPolicy, WorkerPolicy
 from .presence import MasterPresence, SubprocessPresence
-from .schemas import MasterPolicy, WorkerPolicy
 from .worker import Worker
 
 __all__ = (
@@ -9,5 +10,6 @@ __all__ = (
     "MasterPresence",
     "SubprocessPresence",
     "Worker",
+    "WorkerHandler",
     "WorkerPolicy",
 )

@@ -1,248 +1,197 @@
 import time
-from multiprocessing.context import SpawnProcess
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import anyio
-import structlog
 
-from binomic.base import DeserializationError
-from binomic.broker import BrokerFactory, Entry
-from binomic.message import Message
-from binomic.task import TaskNotFoundError, autodiscover
-from binomic.task.registry import registry
-from binomic.task.scheduler import TaskScheduler
+from binomic.broker import (
+    BrokerFactory,
+    BrokerLifecycleMixin,
+    MessageEntry,
+)
 
-from .presence import SubprocessPresence
+from .handler import WorkerHandler
 
 if TYPE_CHECKING:
+    from anyio import Event
     from anyio.abc import TaskGroup
 
     from binomic.broker import Broker
 
-    from .schemas import WorkerPolicy
+    from .policies import WorkerPolicy
+    from .presence import SubprocessPresence
 
 
-__all__ = ("Worker",)
+class Worker:
+    """One consumer process: pull from the broker, execute, ack or requeue.
 
-
-logger = structlog.stdlib.get_logger(__name__)
-
-
-class Worker(SpawnProcess):
-    """Binomic subprocessing worker.
-
-    Spawned rather than forked: a forked child inherits the parent's running
-    event loop, so ``anyio.run`` cannot start in it.
+    ``run`` is the subprocess entry point; ``arun`` builds the broker and the
+    handler, then pumps acquired entries through an anyio memory stream to a
+    pool of consumers until terminated. Liveness is reported by beating on
+    the presence cell the master handed in.
     """
 
     def __init__(
         self,
-        *,
         broker_dsn: str,
         module_name: str,
         consumer: str,
         policy: "WorkerPolicy",
-        presence: SubprocessPresence,
+        presence: "SubprocessPresence",
+        **broker_kwargs: Any,
     ) -> None:
-
-        super().__init__(name=consumer)
 
         self._broker_dsn = broker_dsn
         self._module_name = module_name
         self._consumer = consumer
         self._policy = policy
+        self._presence = presence
+        self._broker_kwargs = broker_kwargs
 
         self._broker: Broker | None = None
-
-        # Owned by the master, which frees it: the worker only writes to it.
-        self._presence = presence
         self._timers: TaskGroup | None = None
+        self._terminate: Event | None = None
+        self._handler: WorkerHandler | None = None
 
-        # A spawned child only receives picklable data, so the AnyIO primitives
-        # are created in `arun` instead of here.
-        self._semaphore: anyio.Semaphore | None = None
-        self._scheduler: TaskScheduler | None = None
-        self._terminate: anyio.Event | None = None
-
-    async def arun(self) -> None:
+    async def _ensure_broker(self) -> "Broker":
 
         if self._broker is None:
             self._broker = BrokerFactory(
                 dsn=self._broker_dsn,
                 queues=self._policy.queues,
+                namespace=f"{self._module_name}",
+                **self._broker_kwargs,
             ).create()
 
-            await self._broker.initialize()
+            if isinstance(self._broker, BrokerLifecycleMixin):
+                await self._broker.start()
 
-        if self._scheduler is None:
-            self._scheduler = TaskScheduler()
-            self._scheduler.start()
+        return self._broker
 
-        # Task discovery happens in the process that executes the tasks.
-        autodiscover(self._module_name)
+    async def _ensure_handler(self) -> "WorkerHandler":
 
-        semaphore = anyio.Semaphore(self._policy.concurrency)
-        terminate = anyio.Event()
-        self._semaphore = semaphore
-        self._terminate = terminate
+        if self._handler is None:
+            self._handler = WorkerHandler(
+                module_name=self._module_name,
+                consumer=self._consumer,
+                broker=await self._ensure_broker(),
+                worker_policy=self._policy,
+            )
+
+            self._handler.start()
+
+        return self._handler
+
+    def _ensure_terminate(self) -> "Event":
+
+        if self._terminate is None:
+            self._terminate = anyio.Event()
+
+        return self._terminate
+
+    async def start(self) -> None:
+
+        await self._ensure_broker()
+        await self._ensure_handler()
+        self._ensure_terminate()
+
+    async def close(self) -> None:
+
+        if self._terminate is not None:
+            if not self._terminate.is_set():
+                self._terminate.set()
+            self._terminate = None
+
+            await anyio.sleep(1)
+
+        if self._timers is not None:
+            if not (scope := self._timers.cancel_scope).cancel_called:
+                scope.cancel()
+            self._timers = None
+
+        if self._handler is not None:
+            self._handler.close()
+            self._handler = None
+
+        if self._broker is not None:
+            if isinstance(self._broker, BrokerLifecycleMixin):
+                await self._broker.close()
+            self._broker = None
+
+    async def _heartbeat(self, terminate: "Event") -> None:
+
+        while not terminate.is_set():
+            self._presence.heartbeat()
+
+            await anyio.sleep(self._policy.heartbeat_interval)
+
+    async def arun(self) -> None:  # noqa: C901
+
+        await self.start()
+
+        handler = await self._ensure_handler()
+        terminate = self._ensure_terminate()
+
+        sender, receiver = anyio.create_memory_object_stream[MessageEntry](
+            self._policy.concurrency,
+        )
+
+        async def _poll_messages() -> None:
+            nonlocal sender, terminate
+
+            while not terminate.is_set():
+                entries = await (await self._ensure_broker()).acquire(
+                    consumer=self._consumer,
+                    count=self._policy.read_count,
+                )
+
+                if not entries:
+                    await anyio.sleep(self._policy.poll_interval)
+
+                for entry in entries:
+                    await sender.send(entry)
+
+        async def _poll_reclaims() -> None:
+            nonlocal terminate, handler
+
+            last_reclaimed = time.monotonic()
+
+            while not terminate.is_set():
+                now = time.monotonic()
+                if now - last_reclaimed >= self._policy.reclaim_interval:
+                    last_reclaimed = now
+                    await handler.reclaim()
+
+                await anyio.sleep(self._policy.poll_interval)
+
+        async def _worker_consumer() -> None:
+            nonlocal terminate, receiver, handler
+
+            while not terminate.is_set():
+                try:
+                    entry = await receiver.receive()
+                except anyio.EndOfStream:
+                    break
+                except anyio.ClosedResourceError:
+                    break
+                await handler.handle(entry)
 
         try:
             async with anyio.create_task_group() as timers:
                 self._timers = timers
                 timers.start_soon(self._heartbeat, terminate)
+                timers.start_soon(_poll_messages)
+                timers.start_soon(_poll_reclaims)
 
-                last_reclaim = time.monotonic()
+                for _ in range(self._policy.concurrency):
+                    timers.start_soon(_worker_consumer)
 
-                while not terminate.is_set():
-                    entries = await self._broker.acquire(
-                        consumer=self._consumer,
-                        count=self._policy.read_count,
-                    )
-
-                    if not entries:
-                        await anyio.sleep(self._policy.poll_interval)
-
-                    else:
-                        for entry in entries:
-                            await semaphore.acquire()
-                            timers.start_soon(self._run, entry)
-
-                    now = time.monotonic()
-                    if now - last_reclaim < self._policy.reclaim_interval:
-                        continue
-
-                    last_reclaim = now
-                    await self._broker.reclaim(
-                        consumer=self._consumer,
-                        min_idle_ms=int(self._policy.task_timeout * 1000),
-                        count=100,
-                    )
+                await terminate.wait()
+                timers.cancel_scope.cancel()
 
         finally:
-            await self.aclose()
-
-    async def _heartbeat(self, terminate: "anyio.Event") -> None:
-
-        while not terminate.is_set():
-            self._presence.heartbeat()
-            logger.info(f"Worker [{self._consumer}] tiktoking: {time.time()}")  # noqa: G004
-
-            await anyio.sleep(self._policy.heartbeat_interval)
-
-    def _backoff(self, attempt: int) -> float:
-
-        return float(min(1.5 * (2 ** (attempt - 1)), 30.0))
-
-    async def _run(self, entry: "Entry") -> None:
-
-        queue, _, fields = entry
-
-        # Both are assembled by `arun`. Without the scheduler a redelivery would
-        # be dropped silently -- the entry is acked as soon as the retry is
-        # scheduled -- so failing loudly beats losing the message.
-        if self._broker is None or self._scheduler is None:
-            raise RuntimeError("Worker is not initialized.")
-
-        cancelled = False
-
-        try:
-            msg = Message.from_json(fields["message"])
-
-            if (
-                elapsed := time.time() - fields["enqueued_at"]
-            ) > self._policy.task_timeout:
-                logger.warning("Message %s has expired.", fields["id"])
-
-            else:
-                try:
-                    with anyio.fail_after(self._policy.task_timeout - elapsed):
-                        await registry.get(msg.name)(*msg.args, **msg.kwargs)
-
-                        return
-
-                except BaseException as err:
-                    if isinstance(
-                        err,
-                        (anyio.get_cancelled_exc_class(), TaskNotFoundError),
-                    ):
-                        # Cancellation keeps the entry pending and an unregistered
-                        # task is not worth retrying: the outer handlers own both.
-                        raise
-
-                    logger.error(
-                        "Failed to process message %s: %s",
-                        fields["id"],
-                        str(err),
-                    )
-
-            # The invocation did not succeed: retry it until the budget is spent.
-            backoff = self._backoff(msg.attempt)
-            msg.attempt += 1
-            if msg.attempt > self._policy.max_attempts:
-                logger.warning(
-                    "Failed to process message %s: max attempts reached.",
-                    fields["id"],
-                )
-
-                # TODO: send to DLQ
-                return
-
-            self._scheduler.delay(
-                func=self._broker.enqueue,
-                spec=registry.get(msg.name),
-                delay=backoff,
-                args=(queue, msg),
-            )
-
-        except TaskNotFoundError as err:
-            logger.error(
-                "Failed to process message %s: %s",
-                fields["id"],
-                str(err),
-            )
-
-        except DeserializationError as err:
-            logger.error(
-                "Failed to deserialize message %s: %s",
-                fields["id"],
-                str(err),
-            )
-
-            # TODO: send to DLQ
-
-        except BaseException as exc:
-            if isinstance(exc, anyio.get_cancelled_exc_class()):
-                # A cancelled run keeps the message pending for the reclaim pass.
-                cancelled = True
-                raise
-
-            logger.error(
-                "Failed to process message %s: %s",
-                fields["id"],
-                str(exc),
-            )
-
-            # TODO: send to DLQ
-
-        finally:
-            if not cancelled:
-                await self._broker.ack(entry)
-
-            if self._semaphore is not None:
-                self._semaphore.release()
-
-    async def aclose(self) -> None:
-
-        if self._terminate is not None and not self._terminate.is_set():
-            self._terminate.set()
-
-        if self._timers and not self._timers.cancel_scope.cancel_called:
-            self._timers.cancel_scope.cancel()
-            self._timers = None
-
-        if self._scheduler is not None:
-            self._scheduler.shutdown()
-            self._scheduler = None
+            await sender.aclose()
+            await receiver.aclose()
+            await self.close()
 
     def run(self) -> None:
 

@@ -7,8 +7,8 @@ __all__ = (
 
 
 class DuplicateTaskError(BinomicError):
-    """Duplicate task error."""
+    """Exception raised when a task with the same name already exists."""
 
 
 class TaskNotFoundError(BinomicError):
-    """Task not found error."""
+    """Exception raised when a task with the given name does not exist."""

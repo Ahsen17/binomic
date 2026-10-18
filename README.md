@@ -26,8 +26,9 @@ Binomic 是一个自定义异步任务框架：以装饰器声明任务，以 Re
   `cron`（cron 表达式）、`interval`（固定间隔）四种模式
 - **Redis Streams 消息代理**：基于消费者组与 PEL 的可靠投递，支持通过
   `xautoclaim` 回收失联消费者的消息
-- **失败重试**：失败或超时的消息按退避（1.5 秒起、逐次翻倍、封顶 30 秒）在
-  `max_attempts`（默认 3）之内重投
+- **失败重试与死信队列**：失败的消息按退避（1.5 秒起、逐次翻倍、封顶 30 秒）在
+  `max_attempts`（默认 3）之内重投；超时、超龄与耗尽次数的消息进入死信队列（DLQ），
+  可检查、可重放
 - **多进程 Worker**：Master 以 multiprocessing 启动多个 Worker 子进程，并携
   presence 心跳持续监督
 - **类型安全**：全量 mypy strict 与 ruff 检查，任务注册表基于泛型 `TaskSpec[P, T]`
@@ -76,19 +77,14 @@ def periodic() -> None: ...
 def poll() -> None: ...
 ```
 
-第一个位置参数是队列名（需与 `queues` 配置对应），任务以函数名的小写形式注册；
+第一个位置参数是队列名（需与 `queues` 配置对应），任务以函数名原样注册（区分大小写）；
 `cron` 与 `interval` 模式的函数不能带参数。
 
 ### 2. 启动并投递
 
 ```python
-from binomic.client import Binomic, BinomicFactory
-from binomic.config import BinomicConfig
-from binomic.message import Message
-from binomic.task import autodiscover
-
-# 发现 myapp 包内所有 tasks.py 模块并注册任务
-autodiscover("myapp")
+from binomic.client import Binomic, BinomicConfig, BinomicFactory
+from binomic.broker import Message
 
 factory = BinomicFactory(
     broker_dsn="redis://localhost:6379/0",
@@ -98,20 +94,23 @@ factory = BinomicFactory(
 
 binomic: Binomic = factory.create()
 
-# 进入上下文后启动 Master（拉起 worker 子进程）并提供提交入口
+# 进入上下文后启动 Master（拉起 worker 子进程）并提供提交入口；
+# 构造时已自动发现 myapp 包内所有 tasks.py 模块并注册任务
 async with binomic:
-    await binomic.submit(Message(name="example", args=[1]))
+    await binomic.submit(Message(task="example", args=[1]))
 ```
 
-消息进哪条 Stream 由任务声明里的队列决定（消息上不指定队列）；`enqueued_at` 由客户端
-在投递时写入该消息的 Stream entry（不是 `Message` 上的字段），无需手工赋值。`submit`
+消息进哪条 Stream 由任务声明里的队列决定（消息上不指定队列）；`enqueued_at` 由 broker
+在投递时盖戳（不是 `Message` 上的字段），无需手工赋值。`submit`
 只支持 `direct` 与 `delay` 两种模式：`cron` 与 `interval` 任务在客户端启动时自动注册，
-对其调用 `submit` 会抛 `ValueError`。
+对其调用 `submit` 会抛 `ValueError`。Redis key 前缀与消费者组名（`namespace`）
+由客户端在内部按 `module_name` 派生，Worker 侧同样派生，两侧自动落在同一命名空间；
+它不是用户面参数。
 
 ### 3. Litestar 应用中集成
 
 ```python
-from binomic.config import BinomicConfig
+from binomic.client import BinomicConfig
 from binomic.plugin.litestar import BinomicPlugin
 from litestar import Litestar
 
@@ -132,13 +131,13 @@ app = Litestar(
 
 ```mermaid
 flowchart TD
-    P[生产者<br>Binomic 客户端] -->|submit：direct| B[AsyncredisBroker<br>Redis Streams]
+    P[生产者<br>Binomic 客户端] -->|submit：direct| B[RedisBroker<br>Redis Streams]
     P -->|submit：delay| S[TaskScheduler]
     P -.->|启动时注册：cron / interval| S
     S -->|到期投递| B
     B -->|consumer group / PEL| W1[Worker 0<br>子进程]
     B -->|consumer group / PEL| W2[Worker 1<br>子进程]
-    W1 -.->|失败或超时：退避后重投<br>attempt + 1| B
+    W1 -.->|失败：退避后重投<br>超时 / 超龄 / 耗尽：进 DLQ| B
     M[Master<br>监督进程] -->|判死则重启| W1
     M -->|判死则重启| W2
     W1 -.->|presence 心跳：IPC| M
@@ -151,29 +150,31 @@ flowchart TD
 - **Scheduler**：`TaskScheduler` 为 `delay` / `cron` / `interval` 三种模式创建对应的
   触发器，到期后走与 `direct` 相同的入队路径。每个 Worker 自己也持有一个
   `TaskScheduler`，承担失败重投的退避延时。
-- **Broker**：`AsyncredisBroker` 将消息写入 Redis Streams，Worker 侧以消费者组
-  读取；失联消费者的 PEL 消息由 `reclaim`（`xautoclaim`）回收重投，重投时 `attempt + 1`。
+- **Broker**：`RedisBroker` 将消息写入 Redis Streams（每队列 `:stream` + `:hash` 双存储，
+  失联消费者的 PEL 消息由 `reclaim`（`xautoclaim`）回收重投，重投时 `attempt + 1` 并重新
+  盖戳；失败重投则保留原 `enqueued_at`——`task_timeout` 是投递总时限。
 - **Master / Worker**：Master 以 multiprocessing 拉起 Worker 子进程并监督其存活。
   心跳走**进程间 IPC**（每个 worker 一个共享 `multiprocessing.Value`，由 Master 创建、
   随子进程构造传入），不经 Redis —— 因此 `is_alive()` 之外还能识别「进程活着但已停跳」；
   Master 按 `heartbeat_interval` 的倍数轮询判死，命中即终止并重建同名 worker。
-  Worker 在进程内通过 `anyio` 以配置并发执行任务。任务成功后 `ack`；失败或超时则**退避后**
-  在 `max_attempts` 之内重投，超出后记日志丢弃；任务被取消时**不 ack**，消息留给 `reclaim`。
+  Worker 在进程内通过 `anyio` 以配置并发执行任务。任务成功后 `ack`；失败则**退避后**
+  在 `max_attempts` 之内重投，超时、超龄与耗尽次数的消息进死信队列（DLQ）；任务被取消
+  时**不 ack**，消息留给 `reclaim`。
 
 ## 路线图
 
 以下是当前已知缺口与迭代规划，按优先级排列，勾选即完成；已落地的能力以
 [CHANGELOG.md](CHANGELOG.md) 为准。
 
-- [ ] **P0 · 消息持久性** —— 失败重投改为「重投确认后再 ack」并持久化延时作业，
-  消除退避窗口内进程退出导致的静默丢失；`delay` 模式的提交同样需要脱离客户端进程内存
-- [ ] **P0 · 存储有界** —— 为 stream 增加修剪策略（`xadd` 的 `maxlen` 或 ack 时清理
-  条目），避免 Redis 内存随历史消息无界增长
+- [ ] **P0 · 延时作业持久化** —— `delay` 模式的提交仍依赖客户端进程内存中的调度器，
+  进程退出即丢；需要将延时作业落盘（Redis 侧排队）
+- [ ] **P0 · 存储有界** —— ack/dead/reclaim 已对已完成的 stream 条目做 `XDEL` 清理，
+  但 stream 底层 radix 树仍随历史消息缓慢增长，需要 `XTRIM`/`MINID` 修剪策略
 - [ ] **P1 · 配置开放** —— 将 `task_timeout` / `heartbeat_interval` /
   `reclaim_interval` / `read_count` / `poll_interval` 提升为 `BinomicConfig` 字段
-  （当前为内部硬编码默认值）
-- [ ] **P1 · 死信队列** —— 超出 `max_attempts` 的消息与不可解析的 payload 进入 DLQ，
-  可检查、可重放（代码中已有三处 `TODO` 标记）
+  （当前为 `WorkerPolicy` 的内部默认值，用户面不可调）
+- [x] **P1 · 死信队列** —— 超时、超龄与超出 `max_attempts` 的消息进入 DLQ
+  （`{namespace}:{queue}:dlq:stream` + `:dlq:hash`），可检查、可重放
 - [ ] **P2 · 多实例** —— consumer 名唯一化（如实例前缀），支持同一 Redis 库上并存
   多个客户端实例
 - [ ] **P2 · 可观测性** —— 提供 metrics 挂钩（队列深度、滞留消息、worker 重启计数等），

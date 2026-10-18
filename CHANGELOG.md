@@ -1,3 +1,44 @@
+## [0.2.0] - 2026-10-18
+
+### 🚀 Features
+
+- Client lifecycle control by contextmanager
+- Structlog formate
+
+### 🐛 Bug Fixes
+
+- Complete the client lifecycle seams
+
+### 🚜 Refactor
+
+- Msg schema
+- Rework the broker, worker and client pipeline
+
+### 📚 Documentation
+
+- Point Message references at the broker module
+- Align guides and README with the reworked pipeline
+
+### 🎨 Styling
+
+- Apply ruff formatting to test files
+
+### 🧪 Testing
+
+- Move message schema tests into the broker suite
+- Expect sorted keys in BaseStruct JSON output
+- Rewrite client tests for the async context lifecycle
+- Align unit and integration suites with the reworked pipeline
+- Create the sample app in client factory tests
+
+### ⚙️ Miscellaneous Tasks
+
+- Pin pre-commit ruff to v0.17.0
+- Add missing trailing newlines
+- Update tooling configuration
+- Upgrade to v0.2.0
+
+
 ## [0.1.3] - 2026-10-10
 
 ### 🐛 Bug Fixes
@@ -7,7 +48,6 @@
 ### 🚜 Refactor
 
 - Switch logging engine to structlog
-
 
 ### 🧪 Testing
 
@@ -55,6 +95,8 @@
 
 - Capitalize the author name in project metadata
 - Add the 0.1.1 changelog entry
+
+
 ## [0.1.1] - 2026-10-08
 
 ### 🚀 Features
@@ -93,6 +135,8 @@
 ### ⚙️ Miscellaneous Tasks
 
 - Upgrade to version 0.1.1
+
+
 ## [0.1.0] - 2026-10-06
 
 ### 🚀 Features

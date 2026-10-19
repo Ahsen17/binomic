@@ -114,6 +114,31 @@ class TestTaskDecorator:
             @task("default", mode="interval", interval=10.0)
             def heartbeat_twice(value: int) -> None: ...
 
+    def test_on_dead_defaults_to_none(self) -> None:
+
+        @task("default", mode="direct")
+        def plain() -> None: ...
+
+        assert plain.on_dead is None
+
+    def test_accepts_on_dead_hook(self) -> None:
+
+        def note(entry: object, reason: object, exc: object) -> None: ...
+
+        @task("default", mode="direct", on_dead=note)
+        def tracked() -> None: ...
+
+        assert tracked.on_dead is note
+
+    def test_rejects_non_callable_on_dead(self) -> None:
+        """The callable check lives at runtime: declarations built through
+        an untyped alias must fail loudly, not just at the type checker."""
+
+        declare: Any = task
+
+        with pytest.raises(ValueError, match="must be callable"):
+            declare("default", mode="direct", on_dead=123)
+
 
 def make_package(
     tmp_path: Path,

@@ -125,7 +125,8 @@ arrival. `attempt` is bumped as usual.
 
 Beyond the `XAUTOCLAIM` arm, the same script also performs a
 **consumer-metadata sweep**: consumer names carry a hostname prefix (so
-coexisting instances never collide), and scaling instances up and down leaves
+instances on different hosts never collide; same-host instances need
+distinct `module_name`s), and scaling instances up and down leaves
 dead consumers behind in the group. Consumers whose PEL is empty and whose
 idle time exceeds `gc_idle_ms` (derived from the policy, floored at ten
 `reclaim_interval`s) are dropped. A consumer with pending entries is never

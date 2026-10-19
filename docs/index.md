@@ -1,9 +1,9 @@
 # Binomic
 
-基于 [anyio](https://anyio.readthedocs.io/) 与 Redis Streams 的异步任务框架。
+轻量、可定制的异步任务框架，基于 [anyio](https://anyio.readthedocs.io/) 与 Redis Streams。
 
 Binomic 以装饰器声明任务，以 Redis Streams 投递消息，由多进程 Worker 消费执行，
-Master 进程负责监督与故障回收。消息体采用
+客户端进程内的 Master 监督循环负责监督与故障回收。消息体采用
 [msgspec](https://jcristharif.com/msgspec/) JSON 序列化，任务 ID 使用 UUIDv7。
 
 ## 特性
@@ -19,6 +19,9 @@ Master 进程负责监督与故障回收。消息体采用
   presence 心跳持续监督 —— 心跳走**进程间 IPC**（不经 Redis），因而在
   `is_alive()` 之外还能识别「进程活着但已停跳」
 - **类型安全**：全量 mypy strict 与 ruff 检查，任务注册表基于泛型 `TaskSpec[P, T]`
+- **可观测性（可选）**：统一 structlog 日志；安装 `binomic[otel]` 后可产生跨进程
+  关联的 traces 与执行耗时、投递滞留、队列深度等 metrics，详见
+  [可观测性](guide/observability.md)
 - **Litestar 集成**：内置 `BinomicPlugin`，将 Binomic 客户端注入 Litestar 依赖
 
 要求 Python ≥ 3.12，Redis ≥ 7.x。

@@ -9,7 +9,7 @@ flowchart TD
     B -->|consumer group / PEL| W1[Worker 0<br>子进程]
     B -->|consumer group / PEL| W2[Worker 1<br>子进程]
     W1 -.->|失败：退避后重投<br>超时 / 超龄 / 耗尽：进 DLQ| B
-    M[Master<br>监督进程] -->|判死则重启| W1
+    M[Master<br>监督循环] -->|判死则重启| W1
     M -->|判死则重启| W2
     W1 -.->|presence 心跳：IPC| M
     W2 -.->|presence 心跳：IPC| M
@@ -26,9 +26,14 @@ flowchart TD
   触发器，到期后走与 `direct` 相同的入队路径。每个 Worker **自己**也持有一个
   `TaskScheduler`（与客户端那个互不相干），专门承担失败重投的退避延时。
   详见[任务模式与调度](scheduling.md)。
-- **Broker**：`RedisBroker` 将消息写入 Redis Streams，Worker 侧以消费者组
-  读取；失联消费者的 PEL 消息由 `reclaim`（`xautoclaim`）回收重投，重投时 `attempt + 1`。
-- **Master / Worker**：Master 以 multiprocessing 拉起 Worker 子进程并监督其存活。
+- **Broker**：`RedisBroker` 将消息写入 Redis Streams：每条队列使用
+  `{namespace}:{queue}:stream`（条目只存消息 id）+ `:hash`（完整封套）；开启遥测时
+  另有 `:context`（按消息 id 存放的 trace 上下文，提交侧写入、执行侧读取，
+  ack/dead 时清理）；DLQ 为 `:dlq:stream` + `:dlq:hash`。Worker 侧以消费者组读取，
+  失联消费者的 PEL 消息由 `reclaim`（`xautoclaim`）回收重投，重投时 `attempt + 1`。
+  观测数据的产生与导出见[可观测性](observability.md)。
+- **Master / Worker**：Master 监督循环运行在客户端进程内，以 multiprocessing
+  拉起 Worker 子进程并监督其存活。
   心跳走**进程间 IPC** 而非 Redis：Master 为每个 worker 建一个共享
   `multiprocessing.Value`，随 `Worker` 构造参数传给子进程，子进程按期写入时间戳、
   Master 直接读取判死。这样在 `is_alive()`（覆盖「进程已死」）之外，还能识别

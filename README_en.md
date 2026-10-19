@@ -18,8 +18,8 @@ A customized async task framework built on anyio and Redis Streams
 
 Binomic is a customized async task framework: tasks are declared with a
 decorator, messages are delivered over Redis Streams, multiprocess workers
-consume and execute them, and a master process supervises the fleet and
-reclaims work from dead consumers. Message payloads are serialized with
+consume and execute them, and an in-process master supervision loop oversees
+the fleet and reclaims work from dead consumers. Message payloads are serialized with
 [msgspec](https://jcristharif.com/msgspec/) JSON, and task IDs use UUIDv7.
 
 ## Features
@@ -36,6 +36,11 @@ reclaims work from dead consumers. Message payloads are serialized with
   through an `on_dead` hook
 - **Multiprocess workers**: the master spawns worker subprocesses via
   multiprocessing and supervises them with a presence heartbeat
+- **Observability (optional)**: unified structlog logging, plus optional
+  traces and metrics via `binomic[otel]` -- cross-process correlated spans and
+  metrics such as execution duration, delivery lag and queue depth. Enable it
+  with `BinomicConfig.otel_enabled`; the SDK and export stay with the
+  application. See the [observability guide](docs/en/guide/observability.md)
 - **Type safe**: fully mypy strict and ruff checked, with a generic
   `TaskSpec[P, T]` task registry
 - **Litestar integration**: the built-in `BinomicPlugin` injects the Binomic
@@ -116,13 +121,16 @@ async with binomic:
 
 Which stream a message lands in is decided by the queue in the task
 declaration (a message does not specify one), and `enqueued_at` is stamped by
-the client on delivery (not onto the `Message`), so it needs no manual
+the client-side broker at enqueue time (not onto the `Message`), so it needs no manual
 assignment. `submit` supports
 only the `direct` and `delay` modes: `cron` and `interval` tasks are registered
 automatically when the client starts, and calling `submit` on them raises
 `ValueError`. The worker tuning knobs are `BinomicConfig` fields too:
 `task_timeout` / `read_count` / `poll_interval` / `heartbeat_interval` /
-`reclaim_interval` — see the [reliability guide](docs/en/guide/reliability.md). The Redis key prefix and consumer group name (`namespace`) are
+`reclaim_interval` — see the [reliability guide](docs/en/guide/reliability.md).
+The telemetry switch `otel_enabled` and the subprocess hook `worker_init` are
+`BinomicConfig` fields too; see the
+[observability guide](docs/en/guide/observability.md). The Redis key prefix and consumer group name (`namespace`) are
 derived internally from `module_name` by both the client and the workers, so
 the two sides land on the same namespace automatically; it is not a
 user-facing parameter.
@@ -159,7 +167,7 @@ flowchart TD
     B -->|consumer group / PEL| W1[Worker 0<br>subprocess]
     B -->|consumer group / PEL| W2[Worker 1<br>subprocess]
     W1 -.->|failure: redeliver after a backoff<br>timeout / stale / exhausted: to the DLQ| B
-    M[Master<br>supervisor] -->|restart when dead| W1
+    M[Master<br>supervision loop] -->|restart when dead| W1
     M -->|restart when dead| W2
     W1 -.->|presence heartbeat: IPC| M
     W2 -.->|presence heartbeat: IPC| M
@@ -174,14 +182,17 @@ flowchart TD
   `delay` / `cron` / `interval` modes and enqueues through the same path as
   `direct` once a job is due. Each worker holds one of its own too, carrying
   the backoff of a failed redelivery.
-- **Broker**: `RedisBroker` writes messages to Redis Streams (per-queue
-  `:stream` + `:hash` dual storage); workers read them through a consumer
+- **Broker**: `RedisBroker` writes messages to Redis Streams: per-queue
+  `:stream` (entry ids only) + `:hash` (full envelopes), plus `:context`
+  (trace context by message id, swept on ack/dead) when telemetry is enabled;
+  the DLQ uses `:dlq:stream` + `:dlq:hash`. Workers read them through a consumer
   group, and messages stranded in a dead consumer's PEL are redelivered via
   `reclaim` (`xautoclaim`), which bumps `attempt` and stamps anew. Failure
   retries keep the original stamp — `task_timeout` is a total delivery
   deadline.
-- **Master / Worker**: the master spawns worker subprocesses through
-  multiprocessing and supervises their liveness. The heartbeat goes over
+- **Master / Worker**: the master supervision loop runs inside the client
+  process and spawns worker subprocesses through multiprocessing, supervising
+  their liveness. The heartbeat goes over
   **inter-process IPC** (one shared `multiprocessing.Value` per worker, created
   by the master and handed to the child through its constructor) rather than
   through Redis -- so beyond `is_alive()` it can still recognise a process that
@@ -214,12 +225,17 @@ checked box means done. For what has landed, see
 - [x] **P1 · Dead-letter queue** -- timed-out, stale and exhausted messages
   land in the DLQ (`{namespace}:{queue}:dlq:stream` + `:dlq:hash`), inspectable
   and replayable
-- [x] **P2 · Multi-instance** -- consumer names are unique (a hostname
-  prefix) and reclaim sweeps away dead empty-PEL consumers, so several
-  client instances can share one Redis database
-- [ ] **P2 · Observability** -- expose metrics hooks (queue depth, stranded
-  messages, worker restarts, ...), covering the external visibility lost when
-  the heartbeat moved in-process
+- [x] **P2 · Multi-instance** -- consumer names carry a hostname prefix
+  (instances on different hosts never collide; same-host instances need
+  distinct `module_name`s) and reclaim sweeps away dead empty-PEL consumers,
+  so several client instances can share one Redis database
+- [x] **P2 · Observability** -- unified structlog logging (submission,
+  execution, retry/DLQ, supervision and lifecycle) plus optional traces and
+  metrics via `binomic[otel]`: producer/consumer spans correlated across
+  processes, plus execution duration, delivery lag, phase counters, queue
+  depth and in-flight tasks. `BinomicConfig.otel_enabled` turns it on; SDK
+  assembly and export stay with the application. Custom brokers that skip
+  `BrokerTelemetryMixin` degrade to root spans and no queue gauges
 
 ## Development
 

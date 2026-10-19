@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import time
 from collections.abc import AsyncIterator, Callable, Coroutine
 from types import SimpleNamespace
@@ -269,6 +270,149 @@ class TestExitSignals:
 
         assert await pending_count(e.broker) == 1
         assert await dead_letter_count(e.broker) == 0
+
+
+class TestOnDeadHook:
+    """Every DLQ path fires the spec's `on_dead` hook once, after the write."""
+
+    async def test_max_attempts_notifies_with_the_failure(
+        self,
+        make_handler: Callable[..., Any],
+        deliver_entry: Deliver,
+        handler_module: Any,
+    ) -> None:
+
+        handler_module.dead_notes.clear()
+        e = await make_handler()
+        await e.broker.enqueue("default", Message(task="dies_hooked", attempt=3))
+        entry = await deliver_entry(e.broker, "default", "c1")
+
+        await e.handler.handle(entry)
+
+        assert await dead_letter_count(e.broker) == 1
+        [task, reason, exc] = handler_module.dead_notes[0]
+        assert (task, reason) == ("dies_hooked", "max_attempts")
+        assert isinstance(exc, ValueError)
+
+    async def test_timeout_notifies_with_the_timeout_error(
+        self,
+        make_handler: Callable[..., Any],
+        deliver_entry: Deliver,
+        handler_module: Any,
+    ) -> None:
+
+        handler_module.dead_notes.clear()
+        e = await make_handler(task_timeout=0.5)
+        await e.broker.enqueue("default", Message(task="slow_hooked"))
+        entry = await deliver_entry(e.broker, "default", "c1")
+
+        await e.handler.handle(entry)
+
+        assert await dead_letter_count(e.broker) == 1
+        [task, reason, exc] = handler_module.dead_notes[0]
+        assert (task, reason) == ("slow_hooked", "timeout")
+        assert isinstance(exc, TimeoutError)
+
+    async def test_over_age_notifies_without_an_exception(
+        self,
+        make_handler: Callable[..., Any],
+        deliver_entry: Deliver,
+        handler_module: Any,
+    ) -> None:
+
+        handler_module.dead_notes.clear()
+        e = await make_handler()
+        await e.broker.enqueue("default", Message(task="aged_hooked"))
+        entry = await deliver_entry(e.broker, "default", "c1")
+        entry.enqueued_at = int(time.time()) - 3600
+
+        await e.handler.handle(entry)
+
+        # The over-age path resolves the spec after the fact and the hook
+        # still fires, with no exception to report.
+        assert await dead_letter_count(e.broker) == 1
+        assert handler_module.dead_notes == [("aged_hooked", "expired", None)]
+
+    async def test_unknown_task_skips_the_hook(
+        self,
+        make_handler: Callable[..., Any],
+        deliver_entry: Deliver,
+        handler_module: Any,
+    ) -> None:
+
+        handler_module.dead_notes.clear()
+        e = await make_handler()
+        await e.broker.enqueue("default", Message(task="ghost"))
+        entry = await deliver_entry(e.broker, "default", "c1")
+        entry.enqueued_at = int(time.time()) - 3600
+
+        await e.handler.handle(entry)
+
+        # The DLQ write still happens; only the hook is skipped.
+        assert await dead_letter_count(e.broker) == 1
+        assert handler_module.dead_notes == []
+
+    async def test_hook_errors_are_swallowed_and_logged(
+        self,
+        make_handler: Callable[..., Any],
+        deliver_entry: Deliver,
+        handler_module: Any,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+
+        handler_module.dead_notes.clear()
+        e = await make_handler()
+        await e.broker.enqueue("default", Message(task="dies_broken_hook", attempt=3))
+        entry = await deliver_entry(e.broker, "default", "c1")
+
+        with caplog.at_level(logging.WARNING, logger="binomic.worker.handler"):
+            await e.handler.handle(entry)
+
+        # The dead letter is written and the hook failure is contained.
+        assert await dead_letter_count(e.broker) == 1
+        assert any(
+            "on_dead hook failed" in record.getMessage() for record in caplog.records
+        )
+
+    async def test_cancellation_inside_the_hook_propagates(
+        self,
+        make_handler: Callable[..., Any],
+        deliver_entry: Deliver,
+        handler_module: Any,
+    ) -> None:
+        """A hook raising the cancel exc must escape: `except Exception`
+        guards hook failures, never cancellation."""
+
+        handler_module.dead_notes.clear()
+        e = await make_handler()
+        await e.broker.enqueue("default", Message(task="dies_cancel_hook", attempt=3))
+        entry = await deliver_entry(e.broker, "default", "c1")
+
+        with pytest.raises(anyio.get_cancelled_exc_class()):
+            await e.handler.handle(entry)
+
+        # The DLQ write completed before the hook fired; only the cancel
+        # escapes.
+        assert await dead_letter_count(e.broker) == 1
+        assert await pending_count(e.broker) == 0
+
+    async def test_async_hook_is_awaited(
+        self,
+        make_handler: Callable[..., Any],
+        deliver_entry: Deliver,
+        handler_module: Any,
+    ) -> None:
+
+        handler_module.dead_notes.clear()
+        e = await make_handler()
+        await e.broker.enqueue("default", Message(task="dies_hooked_async", attempt=3))
+        entry = await deliver_entry(e.broker, "default", "c1")
+
+        await e.handler.handle(entry)
+
+        [task, reason, exc] = handler_module.dead_notes[0]
+        assert (task, reason) == ("dies_hooked_async", "max_attempts")
+        assert isinstance(exc, ValueError)
 
 
 class TestBackoff:

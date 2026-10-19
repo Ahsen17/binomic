@@ -20,7 +20,11 @@ The first positional argument is the **queue name** and must match a queue in
 Tasks are registered under the function name **as written** (case-sensitive),
 which is how you refer to a task when submitting it; names are unique within the
 registry, so registering a second task under the same name raises
-`DuplicateTaskError`.
+`DuplicateTaskError`. Each task can also declare a dead-letter notification
+hook with `on_dead` (`@task(..., on_dead=fn)`): once its message enters the
+DLQ — timeout, staleness, or exhausted `max_attempts` — `fn(entry, reason,
+exc)` is called once; the contract is described in
+[Reliability](reliability.md).
 
 | Mode | Extra argument | When it runs | Takes arguments |
 |-|-|-|-|
@@ -145,10 +149,11 @@ invoked as-is when a job is due.
   about task semantics; an invalid timing value surfaces as a trigger
   construction error from APScheduler.
 - **Where validation lives**: task semantics (mode, required arguments,
-  positivity) are checked by the `@task` decorator at **declaration time** and
-  re-checked by `Binomic.submit` at **submission time**; the scheduler only
-  schedules. A worker's failed redelivery calls `scheduler.delay` directly to
-  defer `broker.retry` (see [Reliability](reliability.md)).
+  positivity, `on_dead` being callable) are checked by the `@task` decorator
+  at **declaration time** and re-checked by `Binomic.submit` at **submission
+  time**; the scheduler only schedules. A worker's failed redelivery calls
+  `scheduler.delay` directly to defer `broker.retry` (see
+  [Reliability](reliability.md)).
 - **Lifecycle**: jobs only start firing after `start()` is called, and `close()`
   stops them. Both are synchronous methods; `close()` stops the underlying
   `AsyncIOScheduler` on the next tick of the event loop. Note that calling

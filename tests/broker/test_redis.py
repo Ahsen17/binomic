@@ -176,7 +176,8 @@ class TestEnqueue:
         assert "-" in entry.id  # a stream entry id, not the message uuid
         assert entry.queue == "default"
         assert entry.message == msg
-        assert entry.enqueued_at == int(entry.enqueued_at)
+        # Full-precision seconds: the stamp is not truncated to whole seconds.
+        assert entry.enqueued_at != int(entry.enqueued_at)
         assert entry.enqueued_at > time.time() - 60
 
     async def test_parks_payload_in_hash_and_marks_the_stream(

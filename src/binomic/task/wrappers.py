@@ -5,7 +5,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Literal, overload
 
-from .register import TaskSpec
+from .register import OnDeadHook, TaskSpec
 
 
 @overload
@@ -13,6 +13,7 @@ def task[**P, T](
     queue: str,
     *,
     mode: Literal["direct"],
+    on_dead: OnDeadHook | None = None,
 ) -> Callable[[Callable[P, T]], TaskSpec[P, T]]: ...
 
 
@@ -22,6 +23,7 @@ def task[**P, T](
     *,
     mode: Literal["delay"],
     delay: float,
+    on_dead: OnDeadHook | None = None,
 ) -> Callable[[Callable[P, T]], TaskSpec[P, T]]: ...
 
 
@@ -31,6 +33,7 @@ def task[**P, T](
     *,
     mode: Literal["cron"],
     cron: str,
+    on_dead: OnDeadHook | None = None,
 ) -> Callable[[Callable[P, T]], TaskSpec[P, T]]: ...
 
 
@@ -40,6 +43,7 @@ def task[**P, T](
     *,
     mode: Literal["interval"],
     interval: float,
+    on_dead: OnDeadHook | None = None,
 ) -> Callable[[Callable[P, T]], TaskSpec[P, T]]: ...
 
 
@@ -55,7 +59,13 @@ def task[**P, T](
     delay: float | None = None,
     cron: str | None = None,
     interval: float | None = None,
+    on_dead: OnDeadHook | None = None,
 ) -> Callable[[Callable[P, T]], TaskSpec[P, T]]:
+
+    if on_dead is not None and not callable(on_dead):
+        raise ValueError(
+            "`on_dead` must be callable",
+        )
 
     match mode:
         case "delay":
@@ -93,6 +103,7 @@ def task[**P, T](
             delay=delay,
             cron=cron,
             interval=interval,
+            on_dead=on_dead,
         )
 
     return decorator

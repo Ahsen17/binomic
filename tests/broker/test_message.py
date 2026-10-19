@@ -1,8 +1,6 @@
 from collections.abc import Callable
 from uuid import UUID
 
-import pytest
-
 from binomic.broker import Message, MessageEntry
 
 
@@ -86,16 +84,32 @@ class TestMessageEntry:
         assert entry.message == msg
         assert entry.enqueued_at == 1_760_000_000
 
-    def test_enqueued_at_is_strict_int(self) -> None:
-        """A float timestamp (e.g. a stale pre-seconds-era body) must fail
-        loudly instead of silently truncating."""
+    def test_enqueued_at_carries_fractional_seconds(self) -> None:
+        """Stamps are full-precision seconds: fractional values survive the
+        round trip, so sub-second `task_timeout` budgets never race the
+        over-age check on truncation error."""
 
-        with pytest.raises(Exception, match="Failed to parse"):
-            MessageEntry.from_dict(
-                {
-                    "id": "1-1",
-                    "queue": "default",
-                    "message": Message(task="noop").to_dict(),
-                    "enqueued_at": 1_760_000_000.5,
-                }
-            )
+        entry = MessageEntry.from_dict(
+            {
+                "id": "1-1",
+                "queue": "default",
+                "message": Message(task="noop").to_dict(),
+                "enqueued_at": 1_760_000_000.5,
+            }
+        )
+
+        assert entry.enqueued_at == 1_760_000_000.5
+
+    def test_enqueued_at_still_accepts_legacy_int_stamps(self) -> None:
+        """Bodies stamped by the previous whole-seconds scheme keep decoding."""
+
+        entry = MessageEntry.from_dict(
+            {
+                "id": "1-1",
+                "queue": "default",
+                "message": Message(task="noop").to_dict(),
+                "enqueued_at": 1_760_000_000,
+            }
+        )
+
+        assert entry.enqueued_at == 1_760_000_000

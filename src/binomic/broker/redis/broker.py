@@ -193,7 +193,7 @@ class RedisBroker(Broker, BrokerLifecycleMixin):
                 self._group,
                 queue,
                 message.to_json(),
-                int(time.time()),
+                time.time(),
             ],
         )
 
@@ -271,7 +271,7 @@ class RedisBroker(Broker, BrokerLifecycleMixin):
                 consumer,
                 min_idle_ms,
                 count,
-                int(time.time()),
+                time.time(),
                 *self._queues,
             ],
         )

@@ -145,7 +145,7 @@ async def boom() -> None:
 
 @task("default", mode="direct")
 async def slow() -> None:
-    await anyio.sleep(0.5)
+    await anyio.sleep(2.0)
 
 
 @task("default", mode="direct")
@@ -156,6 +156,54 @@ async def cancelled() -> None:
 @task("default", mode="direct")
 async def quits() -> None:
     raise SystemExit(3)
+
+
+dead_notes: list[tuple[str, str, object]] = []
+
+
+def note_dead(entry, reason, exc) -> None:
+    dead_notes.append((entry.message.task, reason, exc))
+
+
+async def note_dead_async(entry, reason, exc) -> None:
+    dead_notes.append((entry.message.task, reason, exc))
+
+
+def broken_hook(entry, reason, exc) -> None:
+    raise RuntimeError("hook boom")
+
+
+def cancelling_hook(entry, reason, exc) -> None:
+    raise anyio.get_cancelled_exc_class()
+
+
+@task("default", mode="direct", on_dead=note_dead)
+async def dies_hooked() -> None:
+    raise ValueError("dies")
+
+
+@task("default", mode="direct", on_dead=note_dead_async)
+async def dies_hooked_async() -> None:
+    raise ValueError("dies")
+
+
+@task("default", mode="direct", on_dead=broken_hook)
+async def dies_broken_hook() -> None:
+    raise ValueError("dies")
+
+
+@task("default", mode="direct", on_dead=cancelling_hook)
+async def dies_cancel_hook() -> None:
+    raise ValueError("dies")
+
+
+@task("default", mode="direct", on_dead=note_dead)
+async def slow_hooked() -> None:
+    await anyio.sleep(2.0)
+
+
+@task("default", mode="direct", on_dead=note_dead)
+async def aged_hooked() -> None: ...
 """
 
 

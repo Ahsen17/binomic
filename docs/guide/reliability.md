@@ -99,7 +99,7 @@ worker 死亡属于「投递丢失」而非「任务失败」，副本获得完�
 时间本身已超龄，回收将永远到货即死。`attempt` 照常 +1。
 
 `XAUTOCLAIM` 之外，同一次脚本还会做一遍**消费者元数据清扫**：consumer 名带
-hostname 前缀（跨主机实例互不撞名；同主机多实例请使用不同 `module_name`），实例扩缩容会在消费组里留下死 consumer；
+hostname + Master pid 前缀（同主机与跨主机实例均不撞名），实例扩缩容会在消费组里留下死 consumer；
 **PEL 为空**且闲置超过 `gc_idle_ms`（由 policy 派生，下限为十个 `reclaim_interval`）
 的会被清除。PEL 非空的 consumer 绝不动——`DELCONSUMER` 会销毁其未 ack 条目，让
 那些消息永久滞留。

@@ -124,9 +124,8 @@ already read as stale, and every reclaimed message would arrive dead on
 arrival. `attempt` is bumped as usual.
 
 Beyond the `XAUTOCLAIM` arm, the same script also performs a
-**consumer-metadata sweep**: consumer names carry a hostname prefix (so
-instances on different hosts never collide; same-host instances need
-distinct `module_name`s), and scaling instances up and down leaves
+**consumer-metadata sweep**: consumer names carry hostname + master-pid
+prefixes (so instances never collide on the same host or across hosts), and scaling instances up and down leaves
 dead consumers behind in the group. Consumers whose PEL is empty and whose
 idle time exceeds `gc_idle_ms` (derived from the policy, floored at ten
 `reclaim_interval`s) are dropped. A consumer with pending entries is never

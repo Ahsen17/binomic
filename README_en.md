@@ -225,10 +225,10 @@ checked box means done. For what has landed, see
 - [x] **P1 · Dead-letter queue** -- timed-out, stale and exhausted messages
   land in the DLQ (`{namespace}:{queue}:dlq:stream` + `:dlq:hash`), inspectable
   and replayable
-- [x] **P2 · Multi-instance** -- consumer names carry a hostname prefix
-  (instances on different hosts never collide; same-host instances need
-  distinct `module_name`s) and reclaim sweeps away dead empty-PEL consumers,
-  so several client instances can share one Redis database
+- [x] **P2 · Multi-instance** -- consumer names carry hostname + master-pid
+  prefixes, so instances never collide on the same host or across hosts, and
+  reclaim sweeps away dead empty-PEL consumers, so several client instances can
+  share one Redis database
 - [x] **P2 · Observability** -- unified structlog logging (submission,
   execution, retry/DLQ, supervision and lifecycle) plus optional traces and
   metrics via `binomic[otel]`: producer/consumer spans correlated across

@@ -190,9 +190,9 @@ flowchart TD
   进 context 时映射进 `WorkerPolicy`
 - [x] **P1 · 死信队列** —— 超时、超龄与超出 `max_attempts` 的消息进入 DLQ
   （`{namespace}:{queue}:dlq:stream` + `:dlq:hash`），可检查、可重放
-- [x] **P2 · 多实例** —— consumer 名带 hostname 前缀（跨主机实例互不撞名；
-  同主机多实例请使用不同 `module_name`）+ reclaim 顺带清扫空 PEL 的死 consumer，
-  支持同一 Redis 库上并存多个客户端实例
+- [x] **P2 · 多实例** —— consumer 名带 hostname + Master pid 前缀（同主机与跨主机
+  实例均不撞名）+ reclaim 顺带清扫空 PEL 的死 consumer，支持同一 Redis 库上并存多个
+  客户端实例
 - [x] **P2 · 可观测性** —— 统一 structlog 日志（提交、执行、重试/DLQ、监督与
   生命周期）；可选 `binomic[otel]` 提供 traces 与 metrics：producer/consumer span
   跨进程关联，执行耗时、投递滞留、阶段计数、队列深度与在途任务等指标，由

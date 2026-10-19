@@ -210,8 +210,9 @@ checked box means done. For what has landed, see
 - [x] **P1 · Dead-letter queue** -- timed-out, stale and exhausted messages
   land in the DLQ (`{namespace}:{queue}:dlq:stream` + `:dlq:hash`), inspectable
   and replayable
-- [ ] **P2 · Multi-instance** -- make consumer names unique (e.g. an instance
-  prefix) so several client instances can share one Redis database
+- [x] **P2 · Multi-instance** -- consumer names are unique (a hostname
+  prefix) and reclaim sweeps away dead empty-PEL consumers, so several
+  client instances can share one Redis database
 - [ ] **P2 · Observability** -- expose metrics hooks (queue depth, stranded
   messages, worker restarts, ...), covering the external visibility lost when
   the heartbeat moved in-process

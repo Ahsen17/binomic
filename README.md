@@ -178,8 +178,8 @@ flowchart TD
   （当前为 `WorkerPolicy` 的内部默认值，用户面不可调）
 - [x] **P1 · 死信队列** —— 超时、超龄与超出 `max_attempts` 的消息进入 DLQ
   （`{namespace}:{queue}:dlq:stream` + `:dlq:hash`），可检查、可重放
-- [ ] **P2 · 多实例** —— consumer 名唯一化（如实例前缀），支持同一 Redis 库上并存
-  多个客户端实例
+- [x] **P2 · 多实例** —— consumer 名唯一化（hostname 前缀）+ reclaim 顺带清扫
+  空 PEL 的死 consumer，支持同一 Redis 库上并存多个客户端实例
 - [ ] **P2 · 可观测性** —— 提供 metrics 挂钩（队列深度、滞留消息、worker 重启计数等），
   弥补心跳转入进程内后失去的外部观测面
 

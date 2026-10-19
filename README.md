@@ -174,9 +174,9 @@ flowchart TD
 - [x] **P0 · 存储有界** —— ack/dead/reclaim 对终态条目做 `XDEL` 清理；radix 树节点在
   整节点删空后即释放，主队列实为滑动窗口、不随历史增长（已实测验证）。DLQ 有意不自动
   清理（审计/重放面），保留策略如需再另行迭代
-- [ ] **P1 · 配置开放** —— 将 `task_timeout` / `heartbeat_interval` /
-  `reclaim_interval` / `read_count` / `poll_interval` 提升为 `BinomicConfig` 字段
-  （当前为 `WorkerPolicy` 的内部默认值，用户面不可调）
+- [x] **P1 · 配置开放** —— `task_timeout` / `heartbeat_interval` /
+  `reclaim_interval` / `read_count` / `poll_interval` 已提升为 `BinomicConfig` 字段，
+  进 context 时映射进 `WorkerPolicy`
 - [x] **P1 · 死信队列** —— 超时、超龄与超出 `max_attempts` 的消息进入 DLQ
   （`{namespace}:{queue}:dlq:stream` + `:dlq:hash`），可检查、可重放
 - [x] **P2 · 多实例** —— consumer 名唯一化（hostname 前缀）+ reclaim 顺带清扫

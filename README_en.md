@@ -206,9 +206,9 @@ checked box means done. For what has landed, see
   sliding window that does not grow with history (verified empirically). The
   DLQ is deliberately never auto-pruned (audit/replay surface); iterate on a
   retention policy only if it is ever needed
-- [ ] **P1 · Configuration** -- promote `task_timeout` / `heartbeat_interval` /
-  `reclaim_interval` / `read_count` / `poll_interval` to `BinomicConfig` fields
-  (they are internal `WorkerPolicy` defaults today, not user-facing)
+- [x] **P1 · Configuration** -- `task_timeout` / `heartbeat_interval` /
+  `reclaim_interval` / `read_count` / `poll_interval` are now `BinomicConfig`
+  fields, mapped into the `WorkerPolicy` on context entry
 - [x] **P1 · Dead-letter queue** -- timed-out, stale and exhausted messages
   land in the DLQ (`{namespace}:{queue}:dlq:stream` + `:dlq:hash`), inspectable
   and replayable

@@ -67,11 +67,13 @@ def make_client(
 
     def _make(module_name: str = "clientapp", **overrides: Any) -> Binomic:
 
+        fields: dict[str, Any] = {"config": config}
+        fields.update(overrides)
+
         return Binomic(
             broker_dsn="redis://localhost:6379/0",
             module_name=module_name,
-            config=config,
-            **overrides,
+            **fields,
         )
 
     return _make
@@ -178,6 +180,44 @@ class TestSubmit:
 
 
 class TestContext:
+    async def test_config_knobs_flow_into_the_worker_policy(
+        self,
+        make_client: Callable[..., Binomic],
+        mocker: MockerFixture,
+    ) -> None:
+        """Every user-facing knob on BinomicConfig reaches the WorkerPolicy
+        the master is assembled with."""
+
+        master = mocker.Mock()
+        master.start = mocker.AsyncMock()
+        master.close = mocker.AsyncMock()
+        captured = mocker.patch("binomic.client.client.Master", return_value=master)
+
+        client = make_client(
+            config=BinomicConfig(
+                queues=["default"],
+                workers=2,
+                concurrency=7,
+                max_attempts=5,
+                task_timeout=12.5,
+                read_count=3,
+                poll_interval=0.2,
+                heartbeat_interval=1.5,
+                reclaim_interval=45.0,
+            )
+        )
+
+        async with client:
+            policy = captured.call_args.kwargs["policy"].worker_policy
+
+        assert policy.concurrency == 7
+        assert policy.max_attempts == 5
+        assert policy.task_timeout == 12.5
+        assert policy.read_count == 3
+        assert policy.poll_interval == 0.2
+        assert policy.heartbeat_interval == 1.5
+        assert policy.reclaim_interval == 45.0
+
     async def test_registers_cron_and_interval_jobs(
         self,
         make_client: Callable[..., Binomic],

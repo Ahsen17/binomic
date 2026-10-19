@@ -9,6 +9,7 @@ from anyio import AsyncContextManagerMixin
 from binomic.broker import (
     BrokerFactory,
     BrokerLifecycleMixin,
+    BrokerTelemetryMixin,
     Message,
 )
 from binomic.otel import (
@@ -155,26 +156,38 @@ class Binomic(AsyncContextManagerMixin):
         ):
             return capture_context()
 
-    async def _enqueue(self, queue: str, message: "Message") -> None:
-        """Enqueue with a producer span; shared by all delivery paths."""
+    async def _deliver(
+        self,
+        queue: str,
+        message: "Message",
+        carrier: dict[str, str] | None = None,
+    ) -> None:
+        """Enqueue, handing the trace context only to capable brokers."""
 
         broker = await self._ensure_broker()
 
+        if carrier and isinstance(broker, BrokerTelemetryMixin):
+            await broker.enqueue(
+                queue=queue,
+                message=message,
+                context=carrier,
+            )
+            return
+
+        await broker.enqueue(queue=queue, message=message)
+
+    async def _enqueue(self, queue: str, message: "Message") -> None:
+        """Enqueue with a producer span; shared by all delivery paths."""
+
         if not self._config.otel_enabled:
-            await broker.enqueue(queue=queue, message=message)
+            await self._deliver(queue, message)
             return
 
         with start_producer_span(
             queue,
             self._span_attributes(queue, message),
         ):
-            carrier = capture_context()
-
-            await broker.enqueue(
-                queue=queue,
-                message=message,
-                context=carrier,
-            )
+            await self._deliver(queue, message, capture_context())
 
     async def submit(self, message: "Message") -> None:
 
@@ -204,13 +217,13 @@ class Binomic(AsyncContextManagerMixin):
                     carrier = self._capture(spec.queue, message)
 
                 self._ensure_scheduler().delay(
-                    func=(await self._ensure_broker()).enqueue,
+                    func=self._deliver,
                     delay=spec.delay,
                     args=(
                         spec.queue,
                         message,
+                        carrier or None,
                     ),
-                    kwargs={"context": carrier},
                 )
 
             case _:

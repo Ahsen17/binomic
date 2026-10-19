@@ -3,13 +3,14 @@
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
+from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 from pytest_mock import MockerFixture
 
-from binomic.broker import Message, RedisBroker
+from binomic.broker import Broker, Message, RedisBroker
 from binomic.client import Binomic, BinomicConfig, BinomicFactory
 from binomic.task import TaskNotFoundError
 
@@ -144,7 +145,7 @@ class TestSubmit:
         assert underlying is not None
         jobs = underlying.get_jobs()
         assert len(jobs) == 1
-        assert jobs[0].func.__name__ == "enqueue"
+        assert jobs[0].func.__name__ == "_deliver"
         # (queue, message) pair the job will enqueue with.
         assert jobs[0].args[0] == "delayq"
         assert jobs[0].args[1].task == "later"
@@ -427,3 +428,40 @@ class TestTelemetrySubmission:
         assert await broker.trace_context("default", str(message.id)) is None
 
         await client.close()
+
+
+class TestBrokerCapability:
+    async def test_enabled_submit_survives_a_broker_without_telemetry(
+        self,
+        make_client: Callable[..., Binomic],
+        make_message: Callable[..., Message],
+        otel_sdk: Any,
+    ) -> None:
+
+        class LegacyBroker:
+            """Shape-compatible Broker predating the context handoff."""
+
+            def __init__(self) -> None:
+
+                self.calls: list[tuple[str, Message]] = []
+
+            async def enqueue(self, queue: str, message: Message) -> None:
+
+                self.calls.append((queue, message))
+
+        client = make_client(
+            config=BinomicConfig(
+                queues=["default", "delayq", "cronq"],
+                otel_enabled=True,
+            )
+        )
+        legacy = LegacyBroker()
+        client._broker = cast("Broker", legacy)
+
+        message = make_message(task="alpha")
+
+        with trace.get_tracer("test").start_as_current_span("parent"):
+            await client.submit(message)
+
+        # No context kwarg reached the broker, and the message was delivered.
+        assert legacy.calls == [("default", message)]

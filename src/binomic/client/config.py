@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 from binomic.base import BaseStruct
 
 __all__ = ("BinomicConfig",)
@@ -14,6 +16,11 @@ class BinomicConfig(BaseStruct):
     seconds; ``read_count`` and ``poll_interval`` shape each worker's fetch
     loop; ``heartbeat_interval`` and ``reclaim_interval`` set the liveness
     beat and crash-recovery cadence.
+    ``worker_init`` runs once per worker subprocess before its event loop
+    starts (the hook for installing OpenTelemetry SDK providers), and
+    ``otel_enabled`` gates all telemetry — with the default ``False`` binomic
+    emits nothing and leaves message envelopes untouched. Structlog logs are
+    not affected by the switch.
     """
 
     queues: list[str]
@@ -28,3 +35,6 @@ class BinomicConfig(BaseStruct):
     poll_interval: float = 0.1
     heartbeat_interval: float = 5.0
     reclaim_interval: float = 30.0
+
+    worker_init: Callable[[], None] | None = None
+    otel_enabled: bool = False

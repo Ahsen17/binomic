@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from opentelemetry.trace import SpanKind
 from pytest_mock import MockerFixture
 
 from binomic.broker import Message, RedisBroker
@@ -360,3 +361,69 @@ class TestBinomicFactory:
 
         assert isinstance(client, Binomic)
         assert client._module_name == "clientapp"
+
+
+class TestTelemetrySubmission:
+    async def test_direct_submit_emits_a_producer_span(
+        self,
+        make_client: Callable[..., Binomic],
+        make_message: Callable[..., Message],
+        otel_sdk: Any,
+    ) -> None:
+
+        span_exporter, _ = otel_sdk
+        span_exporter.clear()
+
+        client = make_client(
+            config=BinomicConfig(
+                queues=["default", "delayq", "cronq"],
+                otel_enabled=True,
+            )
+        )
+        await client.start()
+
+        message = make_message(task="alpha")
+        await client.submit(message)
+
+        (create,) = [
+            span
+            for span in span_exporter.get_finished_spans()
+            if span.name == "create default"
+        ]
+
+        assert create.kind is SpanKind.PRODUCER
+        assert create.attributes is not None
+        assert create.attributes["messaging.operation.name"] == "create"
+
+        broker = client._broker
+        assert isinstance(broker, RedisBroker)
+
+        context = await broker.trace_context("default", str(message.id))
+        assert context is not None
+        assert context["traceparent"].startswith("00-")
+
+        await client.close()
+
+    async def test_disabled_submission_stores_no_context(
+        self,
+        make_client: Callable[..., Binomic],
+        make_message: Callable[..., Message],
+        otel_sdk: Any,
+    ) -> None:
+
+        span_exporter, _ = otel_sdk
+        span_exporter.clear()
+
+        client = make_client()
+        await client.start()
+
+        message = make_message(task="alpha")
+        await client.submit(message)
+
+        assert not span_exporter.get_finished_spans()
+
+        broker = client._broker
+        assert isinstance(broker, RedisBroker)
+        assert await broker.trace_context("default", str(message.id)) is None
+
+        await client.close()

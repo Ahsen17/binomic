@@ -34,11 +34,11 @@ class MessageEntry(BaseStruct):
     """The consumer-side envelope of a parked message.
 
     ``id`` is the Redis stream entry id, ``message`` the payload, and
-    ``enqueued_at`` the delivery stamp in whole seconds — the age a worker
-    compares against ``task_timeout``.
+    ``enqueued_at`` the delivery stamp in (fractional) seconds — the age a
+    worker compares against ``task_timeout``.
     """
 
     id: str
     queue: str
     message: Message
-    enqueued_at: int
+    enqueued_at: float

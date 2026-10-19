@@ -28,7 +28,7 @@ Binomic 是一个自定义异步任务框架：以装饰器声明任务，以 Re
   `xautoclaim` 回收失联消费者的消息
 - **失败重试与死信队列**：失败的消息按退避（1.5 秒起、逐次翻倍、封顶 30 秒）在
   `max_attempts`（默认 3）之内重投；超时、超龄与耗尽次数的消息进入死信队列（DLQ），
-  可检查、可重放
+  可检查、可重放，并支持 `on_dead` 死信通知钩子
 - **多进程 Worker**：Master 以 multiprocessing 启动多个 Worker 子进程，并携
   presence 心跳持续监督
 - **类型安全**：全量 mypy strict 与 ruff 检查，任务注册表基于泛型 `TaskSpec[P, T]`
@@ -78,7 +78,10 @@ def poll() -> None: ...
 ```
 
 第一个位置参数是队列名（需与 `queues` 配置对应），任务以函数名原样注册（区分大小写）；
-`cron` 与 `interval` 模式的函数不能带参数。
+`cron` 与 `interval` 模式的函数不能带参数。任务还可以用 `on_dead=fn` 声明死信通知
+钩子：消息因超时、超龄或耗尽 `max_attempts` 进入 DLQ 后，`fn(entry, reason, exc)`
+会被调用一次（无返回值，钩子异常会被记录并吞掉），详见
+[可靠性指南](docs/guide/reliability.md)。
 
 ### 2. 启动并投递
 

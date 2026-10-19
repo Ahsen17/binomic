@@ -1,10 +1,12 @@
 from .exceptions import DuplicateTaskError, TaskNotFoundError
-from .register import TaskRegistry, TaskSpec
+from .register import OnDeadHook, OnDeadReason, TaskRegistry, TaskSpec
 from .scheduler import TaskScheduler
 from .wrappers import autodiscover, task
 
 __all__ = (
     "DuplicateTaskError",
+    "OnDeadHook",
+    "OnDeadReason",
     "TaskNotFoundError",
     "TaskRegistry",
     "TaskScheduler",

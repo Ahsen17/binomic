@@ -1,7 +1,9 @@
+import inspect
 import time
 from typing import TYPE_CHECKING
 
 import anyio
+import structlog
 
 from binomic.task import (
     TaskNotFoundError,
@@ -12,11 +14,14 @@ from binomic.task import (
 
 if TYPE_CHECKING:
     from binomic.broker import Broker, MessageEntry
+    from binomic.task import OnDeadReason
 
     from .policies import WorkerPolicy
 
 
 __all__ = ("WorkerHandler",)
+
+logger = structlog.stdlib.get_logger(__name__)
 
 
 class WorkerHandler:
@@ -52,30 +57,52 @@ class WorkerHandler:
 
         return float(min(1.5 * (2 ** (max(attempt, 1) - 1)), 30.0))
 
-    async def on_dead(self, entry: "MessageEntry") -> None:
+    async def on_dead(
+        self,
+        entry: "MessageEntry",
+        reason: "OnDeadReason",
+        exc: BaseException | None = None,
+    ) -> None:
 
         await self._broker.dead(entry)
 
-        # TODO: notify the task owner via an `on_dead` hook on TaskSpec
-        # (`@task(..., on_dead=fn)`), carried to workers through the same
-        # autodiscover that populates the registry. Fire it here, after the
-        # DLQ write succeeds, as `fn(message, reason, exc)` where reason is
-        # "timeout" | "expired" | "max_attempts" (exc is None for expired).
-        # Hook errors must be logged and swallowed. Resolve the spec
-        # best-effort at this point — the over-age path enters before the
-        # registry lookup, and a missing spec (TaskNotFoundError) simply
-        # skips the hook.
+        # Spec resolution is best-effort: the over-age path enters before
+        # the registry lookup, so a missing spec simply skips the hook.
+        try:
+            hook = self._registry.get(entry.message.task).on_dead
+        except TaskNotFoundError:
+            return
+
+        if hook is None:
+            return
+
+        try:
+            res = hook(entry, reason, exc)
+            if inspect.isawaitable(res):
+                await res
+
+        except Exception:
+            # A notification must never break the consume loop.
+            logger.warning(
+                "on_dead hook failed",
+                task=entry.message.task,
+                exc_info=True,
+            )
 
     async def on_success(self, entry: "MessageEntry") -> None:
 
         await self._broker.ack(entry)
 
-    async def on_retry(self, entry: "MessageEntry") -> None:
+    async def on_retry(
+        self,
+        entry: "MessageEntry",
+        exc: BaseException | None = None,
+    ) -> None:
 
         # Task executed failed, retry
         if entry.message.attempt + 1 > self._policy.max_attempts:
             # Task attempted reaches max, send to dlq
-            await self.on_dead(entry)
+            await self.on_dead(entry, "max_attempts", exc)
 
             return
 
@@ -89,7 +116,7 @@ class WorkerHandler:
 
         if (time.time() - entry.enqueued_at) > self._policy.task_timeout:
             # Task waiting til expired, send to dlq
-            await self.on_dead(entry)
+            await self.on_dead(entry, "expired")
 
             return
 
@@ -107,9 +134,9 @@ class WorkerHandler:
         except TaskNotFoundError:
             await self.on_success(entry)
 
-        except TimeoutError:
+        except TimeoutError as exc:
             # Task executed timeout, send to dlq
-            await self.on_dead(entry)
+            await self.on_dead(entry, "timeout", exc)
 
         except (SystemExit, KeyboardInterrupt):
             # Exit signals must propagate
@@ -119,7 +146,7 @@ class WorkerHandler:
             if isinstance(exc, anyio.get_cancelled_exc_class()):
                 raise
 
-            await self.on_retry(entry)
+            await self.on_retry(entry, exc)
 
     async def reclaim(self) -> None:
 

@@ -1,15 +1,28 @@
 import inspect
-from collections.abc import Callable, Iterator
-from typing import Literal
+from collections.abc import Awaitable, Callable, Iterator
+from typing import TYPE_CHECKING, Literal
 
 from binomic.base import BaseStruct
 
 from .exceptions import DuplicateTaskError, TaskNotFoundError
 
+if TYPE_CHECKING:
+    from binomic.broker import MessageEntry
+
+
 __all__ = (
+    "OnDeadHook",
+    "OnDeadReason",
     "TaskRegistry",
     "TaskSpec",
 )
+
+
+type OnDeadReason = Literal["timeout", "expired", "max_attempts"]
+type OnDeadHook = Callable[
+    ["MessageEntry", OnDeadReason, BaseException | None],
+    Awaitable[None] | None,
+]
 
 
 class TaskSpec[**P, T](BaseStruct):
@@ -17,7 +30,10 @@ class TaskSpec[**P, T](BaseStruct):
 
     Calling a spec awaits the function (sync or async) with the given
     arguments. ``mode`` selects the delivery path and which schedule field
-    (``delay``/``cron``/``interval``) must be set.
+    (``delay``/``cron``/``interval``) must be set. ``on_dead`` is an optional
+    notification hook the worker fires as ``fn(entry, reason, exc)`` after the
+    message is dead-lettered; it may be sync or async, its return value is
+    ignored, and its errors are logged and swallowed.
     """
 
     name: str
@@ -28,6 +44,8 @@ class TaskSpec[**P, T](BaseStruct):
     delay: float | None = None
     cron: str | None = None
     interval: float | None = None
+
+    on_dead: OnDeadHook | None = None
 
     async def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T:
 

@@ -120,7 +120,9 @@ the client on delivery (not onto the `Message`), so it needs no manual
 assignment. `submit` supports
 only the `direct` and `delay` modes: `cron` and `interval` tasks are registered
 automatically when the client starts, and calling `submit` on them raises
-`ValueError`. The Redis key prefix and consumer group name (`namespace`) are
+`ValueError`. The worker tuning knobs are `BinomicConfig` fields too:
+`task_timeout` / `read_count` / `poll_interval` / `heartbeat_interval` /
+`reclaim_interval` — see the [reliability guide](docs/en/guide/reliability.md). The Redis key prefix and consumer group name (`namespace`) are
 derived internally from `module_name` by both the client and the workers, so
 the two sides land on the same namespace automatically; it is not a
 user-facing parameter.

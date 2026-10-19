@@ -108,7 +108,9 @@ async with binomic:
 只支持 `direct` 与 `delay` 两种模式：`cron` 与 `interval` 任务在客户端启动时自动注册，
 对其调用 `submit` 会抛 `ValueError`。Redis key 前缀与消费者组名（`namespace`）
 由客户端在内部按 `module_name` 派生，Worker 侧同样派生，两侧自动落在同一命名空间；
-它不是用户面参数。
+它不是用户面参数。Worker 的调节旋钮同样是 `BinomicConfig` 字段：
+`task_timeout` / `read_count` / `poll_interval` / `heartbeat_interval` /
+`reclaim_interval`，语义见[可靠性指南](docs/guide/reliability.md)。
 
 ### 3. Litestar 应用中集成
 

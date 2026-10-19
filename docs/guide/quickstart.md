@@ -70,7 +70,9 @@ async with binomic:
   Redis Streams；Master 对 Worker 的存活监督走进程间 IPC，不需要 Redis；
 - `BinomicConfig` 中 `workers` 是 Master 拉起的 Worker 子进程数量，
   `concurrency` 是每个 Worker 并发执行的任务数，`max_attempts` 是单条消息的最大尝试
-  次数 —— 其语义见[可靠性](reliability.md)；
+  次数 —— 其语义见[可靠性](reliability.md)；`task_timeout`（投递总时限，秒）、
+  `read_count` 与 `poll_interval`（拉取循环）、`heartbeat_interval` 与
+  `reclaim_interval`（心跳与崩溃回收节奏）同样是它的字段，默认值见 API 参考；
 - `Message` 的 `task` 是任务名，`args` / `kwargs` 承载调用参数（上例会以 `index=1`
   调用 `example`）。消息进到哪条 Stream 由**任务声明里的队列**决定，消息上不需要
   也不能指定队列；

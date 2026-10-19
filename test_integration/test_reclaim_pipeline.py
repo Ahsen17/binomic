@@ -40,7 +40,7 @@ class TestReclaimPipeline:
         )
         await successor.start()
         try:
-            reclaimed = await successor.reclaim("successor", min_idle_ms=0, count=10)
+            reclaimed = await successor.reclaim("successor", min_idle_ms=0, count=10, gc_idle_ms=3_600_000)
 
             assert reclaimed == 1
 

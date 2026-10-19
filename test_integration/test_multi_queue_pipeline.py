@@ -53,7 +53,7 @@ class TestMultiQueuePipeline:
             ] == 1
 
             # Reclaim walks every queue and hands the stranded one over.
-            assert await broker.reclaim("consumer-2", min_idle_ms=0, count=10) == 1
+            assert await broker.reclaim("consumer-2", min_idle_ms=0, count=10, gc_idle_ms=3_600_000) == 1
             redelivered = await broker.acquire("consumer-2", count=10)
 
             assert [entry.message.id for entry in redelivered] == [second.id]

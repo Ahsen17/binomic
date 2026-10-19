@@ -261,6 +261,7 @@ class RedisBroker(Broker, BrokerLifecycleMixin):
         consumer: str,
         min_idle_ms: int,
         count: int,
+        gc_idle_ms: int,
     ) -> int:
 
         resp = await self._invoke_script(
@@ -272,6 +273,7 @@ class RedisBroker(Broker, BrokerLifecycleMixin):
                 min_idle_ms,
                 count,
                 int(time.time()),
+                gc_idle_ms,
                 *self._queues,
             ],
         )

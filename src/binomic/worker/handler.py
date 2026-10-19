@@ -129,5 +129,12 @@ class WorkerHandler:
                 int(self._policy.task_timeout * 1000),
                 10000,
             ),
+            # Consumer metadata hygiene: corpses (empty-PEL consumers left
+            # by dead instances) are swept once they sit idle past this.
+            gc_idle_ms=max(
+                int(self._policy.task_timeout * 1000),
+                10000,
+                int(self._policy.reclaim_interval * 1000) * 10,
+            ),
             count=100,
         )

@@ -410,7 +410,7 @@ class TestReclaim:
         await broker.enqueue("default", make_message())
         stale = await deliver_entry(broker, "default", "dead-consumer")
 
-        assert await broker.reclaim("consumer-1", min_idle_ms=0, count=10) == 1
+        assert await broker.reclaim("consumer-1", min_idle_ms=0, count=10, gc_idle_ms=3_600_000) == 1
         assert (await broker._ensure_client().xpending(STREAM_KEY, "binomic"))[
             "pending"
         ] == 0
@@ -446,7 +446,7 @@ class TestReclaim:
 
         # Unreadable payloads can never execute: dropped with the entry acked,
         # so the reclaim pass is not stuck on them forever.
-        assert await broker.reclaim("consumer-1", min_idle_ms=0, count=10) == 0
+        assert await broker.reclaim("consumer-1", min_idle_ms=0, count=10, gc_idle_ms=3_600_000) == 0
         assert (await broker._ensure_client().xpending(STREAM_KEY, "binomic"))[
             "pending"
         ] == 0
@@ -463,7 +463,7 @@ class TestReclaim:
         await broker._ensure_client().xgroup_destroy("binomic:ghost:stream", "binomic")
 
         with caplog.at_level(logging.WARNING, logger="binomic.broker.redis.broker"):
-            assert await broker.reclaim("consumer-1", min_idle_ms=0, count=10) == 0
+            assert await broker.reclaim("consumer-1", min_idle_ms=0, count=10, gc_idle_ms=3_600_000) == 0
 
         assert not any(
             "Failed to invoke script" in record.getMessage() for record in caplog.records
@@ -479,7 +479,12 @@ class TestReclaim:
         await broker.enqueue("default", make_message())
         await deliver_entry(broker, "default", "dead-consumer")
 
-        assert await broker.reclaim("consumer-1", min_idle_ms=3_600_000, count=10) == 0
+        assert (
+            await broker.reclaim(
+                "consumer-1", min_idle_ms=3_600_000, count=10, gc_idle_ms=3_600_000
+            )
+            == 0
+        )
 
     async def test_failure_degrades_to_zero(
         self, broker: RedisBroker, mocker: MockerFixture
@@ -487,7 +492,7 @@ class TestReclaim:
 
         mocker.patch.object(broker, "_invoke_script", return_value=None)
 
-        assert await broker.reclaim("consumer-1", min_idle_ms=0, count=10) == 0
+        assert await broker.reclaim("consumer-1", min_idle_ms=0, count=10, gc_idle_ms=3_600_000) == 0
 
 
 class TestInvokeScript:

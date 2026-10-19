@@ -299,9 +299,15 @@ class TestReclaim:
 
         await e.handler.reclaim()
 
-        # min_idle is the task_timeout in ms with a 10s floor.
+        # min_idle is the task_timeout in ms with a 10s floor; the consumer
+        # sweep threshold adds a floor of ten reclaim intervals.
         reclaim.assert_awaited_once_with(
             consumer="test-worker",
             min_idle_ms=max(int(e.policy.task_timeout * 1000), 10_000),
+            gc_idle_ms=max(
+                int(e.policy.task_timeout * 1000),
+                10_000,
+                int(e.policy.reclaim_interval * 1000) * 10,
+            ),
             count=100,
         )

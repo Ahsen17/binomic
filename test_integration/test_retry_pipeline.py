@@ -13,6 +13,7 @@ from redis.asyncio import Redis as AsyncRedis
 from binomic.broker import Message
 from binomic.client import Binomic, BinomicConfig
 from test_integration import RETRY_QUEUE
+from test_integration.helpers import wait_until
 
 MAX_ATTEMPTS: int = 2
 EXECUTION_TIMEOUT: float = 30.0
@@ -56,11 +57,17 @@ class TestRetryPipeline:
             assert int(await redis_client.get(attempts_key) or 0) == MAX_ATTEMPTS
 
             # The budget is spent, so the message is dropped, not redelivered.
-            assert (
-                await redis_client.xpending(
+            # The counter is bumped inside the task, before the DLQ move
+            # commits, so wait for the pending entry to clear.
+            async def dropped() -> bool:
+
+                pending = await redis_client.xpending(
                     f"test_integration:{RETRY_QUEUE}:stream", "test_integration"
                 )
-            )["pending"] == 0
+
+                return bool(pending["pending"] == 0)
+
+            await wait_until(dropped)
 
             await anyio.sleep(SETTLE)
 

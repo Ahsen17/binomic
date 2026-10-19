@@ -9,6 +9,7 @@ from redis.asyncio import Redis as AsyncRedis
 from binomic.broker import Message
 from binomic.client import Binomic, BinomicConfig
 from test_integration import E2E_QUEUE
+from test_integration.helpers import wait_until
 
 EXECUTION_TIMEOUT: float = 30.0
 
@@ -47,8 +48,14 @@ class TestEndToEndPipeline:
             )
             assert await redis_client.get(result_key) == "done"
 
-            pending = await redis_client.xpending(
-                f"test_integration:{E2E_QUEUE}:stream", "test_integration"
-            )
+            async def acked() -> bool:
 
-            assert pending["pending"] == 0
+                pending = await redis_client.xpending(
+                    f"test_integration:{E2E_QUEUE}:stream", "test_integration"
+                )
+
+                return bool(pending["pending"] == 0)
+
+            # The task writes its result before returning, so the ack can
+            # still be in flight when the key first appears.
+            await wait_until(acked)

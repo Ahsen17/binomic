@@ -63,6 +63,55 @@ messages, and exhausted `max_attempts`. The DLQ is a pair of keys per queue —
 matches the last delivery (terminal states do not bump it) and the payload is
 preserved whole: inspectable and replayable.
 
+## Dead-letter notification hooks (on_dead)
+
+The DLQ is not a silent end: a task can declare a **dead-letter notification
+hook** with `@task(..., on_dead=fn)`. After a message enters the DLQ through
+any of the three paths above, the worker calls `fn` once — after the DLQ
+write has completed — handing over the message context:
+
+```python
+from binomic.broker import MessageEntry
+from binomic.task import OnDeadReason, task
+
+
+def alert(
+    entry: MessageEntry,
+    reason: OnDeadReason,
+    exc: BaseException | None,
+) -> None:
+    print(f"[{reason}] {entry.message.task} on {entry.queue} is dead")
+
+
+@task("default", on_dead=alert)
+async def charge() -> None: ...
+```
+
+The hook contract:
+
+- called with the **positional arguments** `fn(entry, reason, exc)`: `entry`
+  is the consumer-side envelope `MessageEntry` (queue, stream entry id,
+  payload, and the delivery stamp); `reason` is one of `"timeout"` /
+  `"expired"` / `"max_attempts"`; `exc` is the triggering exception — the
+  `TimeoutError` instance for an execution timeout, the task's original
+  exception at exhausted attempts, and `None` for staleness;
+- **no return value**: the hook is a notification about a fact, not control
+  flow — return values are ignored; replays from the DLQ stay the consumer's
+  business;
+- sync and async functions both work;
+- **delivery semantics are never affected**: an exception raised by a hook is
+  logged (warning) and swallowed, and the consume loop carries on; only
+  cancellation (and exit signals) propagate as-is;
+- **best-effort resolution**: the hook rides on the task declaration and
+  reaches the worker through the same `autodiscover` path; if the message's
+  task name is not registered, the hook is skipped and the DLQ write is
+  unaffected;
+- **hooks must be fast**: they run outside `task_timeout` with no timeout
+  budget — a hanging hook pins one concurrency slot.
+
+The type aliases `OnDeadReason` and `OnDeadHook` are exported from
+`binomic.task` for annotating hook functions.
+
 ## reclaim: crash recovery
 
 When a worker process dies (crash, SIGKILL), nobody acks what sat in its PEL.

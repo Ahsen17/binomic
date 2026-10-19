@@ -32,7 +32,8 @@ reclaims work from dead consumers. Message payloads are serialized with
 - **Retries and dead-letter queue**: failed messages are redelivered after a
   backoff (1.5 seconds, doubling, capped at 30) up to `max_attempts`
   (3 by default); timed-out, stale and exhausted messages land in a dead
-  letter queue (DLQ) that can be inspected and replayed
+  letter queue (DLQ) that can be inspected and replayed, and observed
+  through an `on_dead` hook
 - **Multiprocess workers**: the master spawns worker subprocesses via
   multiprocessing and supervises them with a presence heartbeat
 - **Type safe**: fully mypy strict and ruff checked, with a generic
@@ -86,6 +87,11 @@ def poll() -> None: ...
 The first positional argument is the queue name (it must match the `queues`
 configuration), and tasks are registered under the function name as written
 (case-sensitive); functions in `cron` and `interval` mode take no arguments.
+A task can also declare a dead-letter notification hook with `on_dead=fn`:
+once its message enters the DLQ (timeout, staleness, or exhausted
+`max_attempts`), `fn(entry, reason, exc)` is called once (no return value;
+hook errors are logged and swallowed) — see the
+[reliability guide](docs/en/guide/reliability.md).
 
 ### 2. Start and submit
 

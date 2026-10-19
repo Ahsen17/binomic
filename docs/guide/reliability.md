@@ -49,6 +49,47 @@
 键——`{namespace}:{queue}:dlq:stream` + `:dlq:hash`；副本的 `attempt` 与最后一次
 投递一致（终态不再加一），原始 payload 原样保留，可检查、可重放。
 
+## 死信通知钩子（on_dead）
+
+DLQ 不是终点的静默：任务可以用 `@task(..., on_dead=fn)` 声明一个**死信通知钩子**。
+消息因上述三条路径进入 DLQ 后，Worker 会在 DLQ 写入完成之后调用一次 `fn`，把消息
+上下文交给你：
+
+```python
+from binomic.broker import MessageEntry
+from binomic.task import OnDeadReason, task
+
+
+def alert(
+    entry: MessageEntry,
+    reason: OnDeadReason,
+    exc: BaseException | None,
+) -> None:
+    print(f"[{reason}] {entry.message.task} on {entry.queue} is dead")
+
+
+@task("default", on_dead=alert)
+async def charge() -> None: ...
+```
+
+钩子契约：
+
+- 以 `fn(entry, reason, exc)` **位置参数**调用：`entry` 是消费侧封套 `MessageEntry`
+  （队列、stream 条目 id、payload、投递时间戳俱全）；`reason` 是 `"timeout"` /
+  `"expired"` / `"max_attempts"` 之一；`exc` 为触发异常——执行超时是 `TimeoutError`
+  实例，耗尽次数是任务抛出的原始异常，超龄则是 `None`；
+- **无返回值**：钩子是对既成事实的通知，不是控制流——返回值被忽略；从 DLQ 重放等
+  后续处置由消费方自行承担；
+- 同步、异步函数皆可；
+- **永不影响投递语义**：钩子抛出的异常会被记录（warning）并吞掉，消费循环照常；
+  唯有取消（与退出信号）原样穿透；
+- **best-effort 解析**：钩子挂在任务声明上，随同一条 `autodiscover` 链路到达
+  Worker；消息对应的任务名未注册时钩子被跳过，DLQ 写入不受影响；
+- **钩子必须快**：它运行在 `task_timeout` 之外、没有超时预算，挂死的钩子会占住一个
+  并发槽。
+
+类型别名 `OnDeadReason` 与 `OnDeadHook` 从 `binomic.task` 导出，可为钩子函数写注解。
+
 ## reclaim：宕机恢复
 
 worker 进程死亡（崩溃、被杀）时，其 PEL 里的消息无人 ack。其它消费者每

@@ -16,7 +16,10 @@ def example(index: int = 0) -> None: ...
 
 第一个位置参数是**队列名**，需与 `BinomicConfig` 的 `queues` 对应；`mode` 是仅限
 关键字传参，默认 `"direct"`。任务以**函数名原样**注册（区分大小写），投递时用该名字指定任务；
-注册表内名字唯一，重复注册同名任务会抛 `DuplicateTaskError`。
+注册表内名字唯一，重复注册同名任务会抛 `DuplicateTaskError`。每个任务还可以声明
+`on_dead` 死信通知钩子（`@task(..., on_dead=fn)`）：消息因超时、超龄或耗尽
+`max_attempts` 进入 DLQ 后，`fn(entry, reason, exc)` 会被调用一次——契约见
+[可靠性](reliability.md)。
 
 | 模式 | 附加参数 | 执行时机 | 能否带参数 |
 |-|-|-|-|
@@ -122,9 +125,10 @@ asyncio.run(main())
   `interval(func, *, interval, args=None, kwargs=None)`，均为**同步方法**；`func` 是
   到期时要调用的可调用对象，`args` / `kwargs` 原样传给 `func`。调度器不感知任务语义，
   时序值不合法时由 APScheduler 的触发器构造报错。
-- **校验归属**：任务语义（模式、必填参数、正数）在**声明期**由 `@task` 装饰器校验，
-  在**提交期**由 `Binomic.submit` 复核；调度器只负责排程。Worker 的失败重投就是直接
-  调 `scheduler.delay` 把 `broker.retry` 排成延时作业（见[可靠性](reliability.md)）。
+- **校验归属**：任务语义（模式、必填参数、正数、`on_dead` 须为可调用对象）在
+  **声明期**由 `@task` 装饰器校验，在**提交期**由 `Binomic.submit` 复核；调度器只
+  负责排程。Worker 的失败重投就是直接调 `scheduler.delay` 把 `broker.retry` 排成
+  延时作业（见[可靠性](reliability.md)）。
 - **生命周期**：`start()` 之后作业才会真正触发，`close()` 停机，二者均为同步方法；
   `close()` 对底层 `AsyncIOScheduler` 的停止在事件循环的下一个 tick 生效。注意
   `close()` 紧跟在调度之后调用会让作业来不及触发（上例用 `await asyncio.sleep(6)`

@@ -201,9 +201,11 @@ checked box means done. For what has landed, see
 - [ ] **P0 · Persisted delayed jobs** -- `delay`-mode submissions still depend
   on the scheduler living in the client process's memory and are lost on exit;
   they need to be persisted (queued on the Redis side)
-- [ ] **P0 · Bounded storage** -- ack/dead/reclaim already `XDEL` completed
-  stream entries, but the underlying radix tree still grows slowly with
-  message history; a `XTRIM`/`MINID` policy is needed
+- [x] **P0 · Bounded storage** -- ack/dead/reclaim `XDEL` terminal entries;
+  radix-tree nodes are released once fully deleted, so live queues are a
+  sliding window that does not grow with history (verified empirically). The
+  DLQ is deliberately never auto-pruned (audit/replay surface); iterate on a
+  retention policy only if it is ever needed
 - [ ] **P1 · Configuration** -- promote `task_timeout` / `heartbeat_interval` /
   `reclaim_interval` / `read_count` / `poll_interval` to `BinomicConfig` fields
   (they are internal `WorkerPolicy` defaults today, not user-facing)

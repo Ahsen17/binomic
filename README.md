@@ -171,8 +171,9 @@ flowchart TD
 
 - [ ] **P0 · 延时作业持久化** —— `delay` 模式的提交仍依赖客户端进程内存中的调度器，
   进程退出即丢；需要将延时作业落盘（Redis 侧排队）
-- [ ] **P0 · 存储有界** —— ack/dead/reclaim 已对已完成的 stream 条目做 `XDEL` 清理，
-  但 stream 底层 radix 树仍随历史消息缓慢增长，需要 `XTRIM`/`MINID` 修剪策略
+- [x] **P0 · 存储有界** —— ack/dead/reclaim 对终态条目做 `XDEL` 清理；radix 树节点在
+  整节点删空后即释放，主队列实为滑动窗口、不随历史增长（已实测验证）。DLQ 有意不自动
+  清理（审计/重放面），保留策略如需再另行迭代
 - [ ] **P1 · 配置开放** —— 将 `task_timeout` / `heartbeat_interval` /
   `reclaim_interval` / `read_count` / `poll_interval` 提升为 `BinomicConfig` 字段
   （当前为 `WorkerPolicy` 的内部默认值，用户面不可调）

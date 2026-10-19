@@ -184,6 +184,19 @@ With structlog's stdlib `ProcessorFormatter`, the handler above receives both
 Binomic's and your application's records. The API reference documents the
 gateways that emit them.
 
+## Custom brokers
+
+Handing the trace context across processes and observing queue depth are
+**optional capabilities**. A custom broker implements the two methods of
+`BrokerTelemetryMixin` (`trace_context` and `observe`, no Lua required): store
+the context in the middleware's own metadata (for example AMQP or Kafka
+message headers) and read it back by message id at execution time.
+
+Without the mixin binomic degrades gracefully and **never raises**: messages
+are delivered and executed as usual, the process span becomes a root span and
+queue-depth gauges are not registered. The client only passes the context to
+brokers that implement the capability.
+
 ## Multiple processes
 
 - A global provider may be installed only once per process; repeated attempts

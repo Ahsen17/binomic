@@ -166,6 +166,16 @@ logging.getLogger().addHandler(
 若使用 structlog 的 stdlib `ProcessorFormatter`，上述 handler 即可同时收到
 Binomic 与应用自身的日志。日志事件与级别由库内埋点决定，接口见 API 参考。
 
+## 自定义 broker
+
+trace 上下文的传递与队列观测是**可选能力**。自定义 broker 只需实现
+`BrokerTelemetryMixin` 的两个方法即可接入（`trace_context` 与 `observe`，不要求
+Lua）：把上下文随消息存进中间件自己的元数据区（例如 AMQP/Kafka 的 message
+headers），执行时按消息 ID 取回即可。
+
+不实现时 binomic 自动降级，**不会报错**：消息照常投递与执行，process span 变为
+root span，队列深度 gauge 不注册。客户端也只在 broker 实现该能力时才传入上下文。
+
 ## 多次运行与多进程
 
 - 每个进程的全局 provider 只能设置一次；重复设置会告警且不生效；

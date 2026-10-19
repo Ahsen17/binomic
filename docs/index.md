@@ -30,6 +30,7 @@ guide/quickstart
 guide/architecture
 guide/scheduling
 guide/reliability
+guide/observability
 guide/litestar
 api
 ```

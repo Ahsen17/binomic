@@ -37,6 +37,12 @@ binomic.worker
 .. automodule:: binomic.worker
    :members:
 
+binomic.otel
+------------
+
+.. automodule:: binomic.otel
+   :members:
+
 binomic.base
 ------------
 

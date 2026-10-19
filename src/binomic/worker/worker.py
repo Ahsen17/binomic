@@ -2,16 +2,26 @@ import time
 from typing import TYPE_CHECKING, Any
 
 import anyio
+import structlog
 
 from binomic.broker import (
     BrokerFactory,
     BrokerLifecycleMixin,
+    BrokerTelemetryMixin,
     MessageEntry,
+)
+from binomic.otel import (
+    QUEUE_NAME,
+    WORKER_CONSUMER,
+    create_observable_gauge,
+    create_up_down_counter,
 )
 
 from .handler import WorkerHandler
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from anyio import Event
     from anyio.abc import TaskGroup
 
@@ -19,6 +29,9 @@ if TYPE_CHECKING:
 
     from .policies import WorkerPolicy
     from .presence import SubprocessPresence
+
+
+logger = structlog.stdlib.get_logger(__name__)
 
 
 class Worker:
@@ -51,6 +64,8 @@ class Worker:
         self._timers: TaskGroup | None = None
         self._terminate: Event | None = None
         self._handler: WorkerHandler | None = None
+        self._inflight: Any | None = None
+        self._queue_snapshot: dict[str, tuple[int, float | None]] = {}
 
     async def _ensure_broker(self) -> "Broker":
 
@@ -124,12 +139,94 @@ class Worker:
 
             await anyio.sleep(self._policy.heartbeat_interval)
 
+    def _setup_queue_gauges(self) -> None:
+
+        # Callbacks run on the SDK's collection thread, so they read a copy:
+        # iterating the live dict while the loop refreshes it would race.
+        def depth() -> "Iterable[tuple[float, dict[str, str]]]":
+
+            return [
+                (float(snapshot[0]), {QUEUE_NAME: queue})
+                for queue, snapshot in dict(self._queue_snapshot).items()
+            ]
+
+        def oldest_age() -> "Iterable[tuple[float, dict[str, str]]]":
+
+            observations: list[tuple[float, dict[str, str]]] = []
+
+            for queue, (_, age) in dict(self._queue_snapshot).items():
+                if age is not None:
+                    observations.append((age, {QUEUE_NAME: queue}))
+
+            return observations
+
+        create_observable_gauge(
+            name="binomic.queue.depth",
+            unit="{message}",
+            observe=depth,
+        )
+        create_observable_gauge(
+            name="binomic.queue.oldest_pending.age",
+            unit="s",
+            observe=oldest_age,
+        )
+
+    async def _observe_queues(self, terminate: "Event") -> None:
+
+        broker = await self._ensure_broker()
+
+        if not isinstance(broker, BrokerTelemetryMixin):
+            return
+
+        last_observed = time.monotonic()
+
+        while not terminate.is_set():
+            now = time.monotonic()
+
+            if now - last_observed >= self._policy.reclaim_interval:
+                last_observed = now
+
+                for queue in self._policy.queues:
+                    try:
+                        observed = await broker.observe(queue)
+
+                    except Exception:
+                        # A probe hiccup keeps the previous snapshot value.
+                        logger.debug(
+                            "Queue observation failed",
+                            queue=queue,
+                            exc_info=True,
+                        )
+
+                        continue
+
+                    if observed is not None:
+                        self._queue_snapshot[queue] = observed
+
+            await anyio.sleep(self._policy.poll_interval)
+
     async def arun(self) -> None:  # noqa: C901
 
         await self.start()
 
         handler = await self._ensure_handler()
         terminate = self._ensure_terminate()
+
+        observable = isinstance(
+            await self._ensure_broker(),
+            BrokerTelemetryMixin,
+        )
+
+        if self._policy.otel_enabled:
+            self._inflight = create_up_down_counter(
+                name="binomic.worker.inflight.tasks",
+                unit="{task}",
+            )
+
+            if observable:
+                self._setup_queue_gauges()
+
+        logger.info("Worker started", consumer=self._consumer)
 
         sender, receiver = anyio.create_memory_object_stream[MessageEntry](
             self._policy.concurrency,
@@ -173,7 +270,16 @@ class Worker:
                     break
                 except anyio.ClosedResourceError:
                     break
-                await handler.handle(entry)
+
+                if (counter := self._inflight) is not None:
+                    counter.add(1, attributes={WORKER_CONSUMER: self._consumer})
+
+                try:
+                    await handler.handle(entry)
+
+                finally:
+                    if (counter := self._inflight) is not None:
+                        counter.add(-1, attributes={WORKER_CONSUMER: self._consumer})
 
         try:
             async with anyio.create_task_group() as timers:
@@ -181,6 +287,9 @@ class Worker:
                 timers.start_soon(self._heartbeat, terminate)
                 timers.start_soon(_poll_messages)
                 timers.start_soon(_poll_reclaims)
+
+                if self._policy.otel_enabled and observable:
+                    timers.start_soon(self._observe_queues, terminate)
 
                 for _ in range(self._policy.concurrency):
                     timers.start_soon(_worker_consumer)
@@ -191,8 +300,12 @@ class Worker:
         finally:
             await sender.aclose()
             await receiver.aclose()
+            logger.info("Worker stopped", consumer=self._consumer)
             await self.close()
 
     def run(self) -> None:
+
+        if (init := self._policy.worker_init) is not None:
+            init()
 
         anyio.run(self.arun)

@@ -4,6 +4,7 @@ from multiprocessing import get_context
 from typing import TYPE_CHECKING, Any, Final, Literal
 
 import anyio
+import structlog
 
 from .presence import MasterPresence, SubprocessPresence
 from .worker import Worker
@@ -15,6 +16,8 @@ if TYPE_CHECKING:
 
 
 TERMINATE_TIMEOUT: Final[float] = 5.0
+
+logger = structlog.stdlib.get_logger(__name__)
 
 
 class Master:
@@ -78,6 +81,8 @@ class Master:
         self._presence.watch(consumer, heartbeat)
         self._subprocesses[consumer] = process
 
+        logger.info("Worker spawned", consumer=consumer, pid=process.pid)
+
     def _stop_proc(self, process: "BaseProcess") -> None:
 
         if process.is_alive():
@@ -86,6 +91,12 @@ class Master:
 
             if process.is_alive():
                 process.kill()
+
+            logger.info(
+                "Worker terminated",
+                consumer=process.name,
+                pid=process.pid,
+            )
 
     async def _visor(self) -> None:
 
@@ -104,11 +115,18 @@ class Master:
                 # Intentional for now: a start that slow is itself a fault worth
                 # surfacing. Revisit with a first-beat grace window, keeping the
                 # is_alive() arm always active.
-                if (
+                stalled = (
                     now - status.get(consumer, 0.0)
                     > self._policy.worker_policy.heartbeat_interval * 3
-                    or not process.is_alive()
-                ):
+                )
+
+                if stalled or not process.is_alive():
+                    logger.warning(
+                        "Worker restarted",
+                        consumer=consumer,
+                        reason="heartbeat" if stalled else "dead",
+                    )
+
                     await anyio.to_thread.run_sync(self._stop_proc, process)
 
                     # Restart worker

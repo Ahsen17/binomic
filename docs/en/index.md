@@ -5,8 +5,9 @@ A lightweight, customizable asynchronous task framework for Python, built on
 
 Binomic takes tasks declared with decorators, delivers messages through Redis
 Streams, executes them in multiprocessing workers, and supervises the whole
-fleet with a master process. Message payloads are JSON-serialized with
-[msgspec](https://jcristharif.com/msgspec/) and task IDs are UUIDv7.
+fleet with an in-process master supervision loop. Message payloads are
+JSON-serialized with [msgspec](https://jcristharif.com/msgspec/) and task IDs
+are UUIDv7.
 
 ## Features
 
@@ -24,6 +25,10 @@ fleet with a master process. Message payloads are JSON-serialized with
   up but has stopped beating
 - **Type safe**: fully checked with mypy strict and ruff; the task registry is
   built on the generic `TaskSpec[P, T]`
+- **Observability (optional)**: unified structlog logging, plus optional
+  traces and metrics through `binomic[otel]` -- cross-process correlated spans
+  and metrics such as execution duration, delivery lag and queue depth; see
+  [Observability](guide/observability.md)
 - **Litestar integration**: a built-in `BinomicPlugin` injects the Binomic
   client into Litestar dependencies
 

@@ -218,8 +218,12 @@ def mark_span_error(exc: BaseException) -> None:
 
     from opentelemetry.trace import Status, StatusCode, get_current_span
 
-    span = get_current_span()
+    try:
+        span = get_current_span()
 
-    if span.is_recording():
-        span.record_exception(exc)
-        span.set_status(Status(StatusCode.ERROR))
+        if span.is_recording():
+            span.record_exception(exc)
+            span.set_status(Status(StatusCode.ERROR))
+
+    except Exception:
+        logger.debug("span error marking failed", exc_info=True)

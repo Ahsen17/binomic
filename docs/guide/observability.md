@@ -1,7 +1,8 @@
 # 可观测性
 
-Binomic 内置 OpenTelemetry（OTel）三信号采集：**traces、metrics、logs**。
-采集是**可选能力**：OTel 依赖放在独立 extra 中，且默认关闭。Binomic 只负责产生
+Binomic 产出可观测性数据：**traces 与 metrics** 通过 OpenTelemetry（OTel）API
+发射，日志由 structlog 输出、可由应用桥接进 OTel。采集是**可选能力**：OTel 依赖
+放在独立 extra 中，且默认关闭。Binomic 只负责产生
 遥测数据，**SDK、provider 与 exporter 全部由调用方装配** —— 库内不注册任何
 exporter，也不会向 collector 输出。
 
@@ -9,11 +10,14 @@ exporter，也不会向 collector 输出。
 
 ```bash
 # uv
-uv add "binomic[otel]"
+uv add "binomic[otel]" opentelemetry-sdk
 
 # pip
-pip install "binomic[otel]"
+pip install "binomic[otel]" opentelemetry-sdk
 ```
+
+`binomic[otel]` 只包含 `opentelemetry-api`；下面的示例还导入 `opentelemetry.sdk`，
+SDK 与具体 exporter 需按你的后端另行安装。
 
 ```python
 from binomic.client import BinomicConfig
@@ -73,8 +77,10 @@ trace.set_tracer_provider(provider)
 > 每个进程只能设置一次全局 provider；再次设置只会告警且不生效。
 
 每次 `submit`（以及 cron/interval 的每次触发）产生一个 `create {queue}` PRODUCER
-span，并把当前 W3C trace context（`traceparent`、`baggage`）写入 Redis 中独立的
-上下文存储 —— 消息封套（`Message` / `MessageEntry`）本身不携带任何遥测字段。
+span，并把当前 W3C trace context（`traceparent`、`tracestate`、`baggage`）写入
+broker 的独立上下文存储（Redis 实现为 `{namespace}:{queue}:context`，按消息 id
+存放）—— 消息封套（`Message` / `MessageEntry`）本身不携带任何遥测字段。direct
+任务在本次 enqueue 时写入；delay 任务在提交时捕获上下文、到期投递时写入。
 
 ### Worker 子进程
 
@@ -104,6 +110,7 @@ config = BinomicConfig(
 ```
 
 - `worker_init` 在每个 worker 子进程启动时、事件循环创建前**同步调用一次**；
+  它必须是同步可调用对象——async 函数的返回协程不会被等待；
 - 它必须是**模块级函数**（spawn 会按引用序列化），不能是 lambda 或闭包；
 - pickle 传递的是 `模块名:限定名` 的引用而不是代码，因此该模块在 worker 子进程里
   **必须可导入**（与主进程同一环境、同一包路径）；
@@ -164,7 +171,9 @@ logging.getLogger().addHandler(
 ```
 
 若使用 structlog 的 stdlib `ProcessorFormatter`，上述 handler 即可同时收到
-Binomic 与应用自身的日志。日志事件与级别由库内埋点决定，接口见 API 参考。
+Binomic 与应用自身的日志。级别约定：逐消息事件（提交、执行开始/完成、重试调度）
+为 `debug`，生命周期（客户端、worker、broker 启停）为 `info`，失败路径（执行失败、
+超时、超龄、DLQ、worker 重启）为 `warning`。
 
 ## 自定义 broker
 
@@ -180,5 +189,7 @@ root span，队列深度 gauge 不注册。客户端也只在 broker 实现该�
 
 - 每个进程的全局 provider 只能设置一次；重复设置会告警且不生效；
 - worker 子进程各自独立上报，指标是按进程序列，聚合口径由后端决定；
-- trace/metric 经 OTel API 发射，API 契约保证不向调用侧抛异常；上下文捕获/读取、span 错误标注与 gauge 回调的失败会被吞掉并降级为 debug 日志，不影响投递、执行或 ack；
+- 上下文捕获/读取、span 错误标注与 gauge 回调的失败会被吞掉并降级为 debug
+  日志，不影响投递、执行或 ack；trace/metric 的创建与 span 开启依赖 OTel API
+  的不抛异常契约，并由 `ensure_available()` 在启用时前置校验；
 - `ensure_available()` 是唯一故意抛错的入口：启用却未安装 extra 时立即失败。

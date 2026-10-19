@@ -1,7 +1,8 @@
 # Observability
 
-Binomic can emit all three OpenTelemetry (OTel) signals: **traces, metrics and
-logs**. Collection is **optional**: the OTel dependency ships in a separate
+Binomic produces observability data: **traces and metrics** are emitted through
+the OpenTelemetry (OTel) API, while logs go through structlog and can be bridged
+into OTel by the application. Collection is **optional**: the OTel dependency ships in a separate
 extra and is disabled by default. Binomic only produces telemetry —
 **the SDK, its providers and any exporter are yours to assemble**. The library
 registers no exporter and never writes to a collector.
@@ -10,11 +11,15 @@ registers no exporter and never writes to a collector.
 
 ```bash
 # uv
-uv add "binomic[otel]"
+uv add "binomic[otel]" opentelemetry-sdk
 
 # pip
-pip install "binomic[otel]"
+pip install "binomic[otel]" opentelemetry-sdk
 ```
+
+`binomic[otel]` only pulls `opentelemetry-api`; the examples below also import
+`opentelemetry.sdk`, so the SDK and a backend-specific exporter are installed
+separately.
 
 ```python
 from binomic.client import BinomicConfig
@@ -80,8 +85,11 @@ trace.set_tracer_provider(provider)
 
 Every `submit` (and every cron/interval trigger) opens a `create {queue}`
 PRODUCER span and stores the current W3C trace context (`traceparent`,
-`baggage`) in a dedicated Redis record. The message envelope
-(`Message` / `MessageEntry`) carries no telemetry fields.
+`tracestate`, `baggage`) in the broker's dedicated context store (the Redis
+implementation uses `{namespace}:{queue}:context`, keyed by message id). The
+message envelope (`Message` / `MessageEntry`) carries no telemetry fields.
+Direct tasks write it during the enqueue; delayed tasks capture it at submit
+time and write it when the scheduled enqueue fires.
 
 ### Worker subprocesses
 
@@ -112,7 +120,8 @@ config = BinomicConfig(
 ```
 
 - `worker_init` runs **once per worker subprocess**, synchronously, before the
-  event loop is created;
+  event loop is created; it must be a synchronous callable -- the coroutine
+  returned by an async function is never awaited;
 - it must be a **module-level function** (spawn pickles callbacks by
   reference), never a lambda or closure;
 - pickle transports the `module:qualname` reference, not the code, so that
@@ -181,8 +190,10 @@ logging.getLogger().addHandler(
 ```
 
 With structlog's stdlib `ProcessorFormatter`, the handler above receives both
-Binomic's and your application's records. The API reference documents the
-gateways that emit them.
+Binomic's and your application's records. Level convention: per-message events
+(submission, execution start/finish, retry scheduling) are `debug`; lifecycle
+events (client, worker and broker start/stop) are `info`; failure paths
+(execution failure, timeout, stale message, DLQ, worker restart) are `warning`.
 
 ## Custom brokers
 
@@ -203,9 +214,10 @@ brokers that implement the capability.
   warn and do nothing;
 - every worker subprocess reports independently, so metrics are per-process
   series and aggregation is the backend's call;
-- trace/metric emission goes through the OTel API, whose contract never raises
-  into callers; context capture/read failures, span error marking and gauge
-  callback failures are swallowed and downgraded to debug logs, never
-  interrupting delivery, execution or acks;
+- context capture/read failures, span error marking and gauge callback
+  failures are swallowed and downgraded to debug logs, never interrupting
+  delivery, execution or acks; creating instruments and opening spans relies on
+  the OTel API's no-throw contract and on `ensure_available()` when telemetry is
+  enabled;
 - `ensure_available()` is the only gateway that raises on purpose: enabling
   telemetry without the extra fails immediately.

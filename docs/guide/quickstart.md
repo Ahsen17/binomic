@@ -78,5 +78,8 @@ async with binomic:
   也不能指定队列；
 - Redis key 前缀与消费者组名（`namespace`）由客户端与 Worker 各自按 `module_name`
   在内部派生，不是用户面参数：同一 `module_name` 的客户端与 Worker 自动共用命名空间；
-- `enqueued_at` 无需手工赋值：它在**实际投递时**由客户端盖戳（不是 `Message` 上的
-  字段），延迟与周期任务也因此每次投递都拿到当前时间。
+- `enqueued_at` 无需手工赋值：它在**实际投递时**由客户端进程内的 broker 在
+  enqueue 时盖戳（不是 `Message` 上的字段），延迟与周期任务也因此每次投递都拿到
+  当前时间；
+- 可观测性由 `otel_enabled` 开启、`worker_init` 负责在 worker 子进程内安装 SDK，
+  详见[可观测性](observability.md)。

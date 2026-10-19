@@ -86,6 +86,9 @@ async with binomic:
   arguments (the example above calls `example` with `index=1`). Which stream a
   message lands in is decided by the **queue in the task declaration** — a
   message neither needs nor can specify a queue;
-- `enqueued_at` needs no manual assignment: the client stamps it -- not onto
-  the `Message` itself -- at the moment of **actual delivery**, which is also
-  why delay and periodic tasks see the current time on every delivery.
+- `enqueued_at` needs no manual assignment: the client-side broker stamps it
+  -- not onto the `Message` itself -- at the moment of **actual delivery**,
+  which is also why delay and periodic tasks see the current time on every
+  delivery;
+- telemetry is enabled with `otel_enabled`, and `worker_init` installs the SDK
+  inside each worker subprocess; see [Observability](observability.md).

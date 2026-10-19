@@ -210,9 +210,20 @@ class WorkerHandler:
 
             return
 
+        delay = self._backoff(entry.message.attempt)
+
+        logger.debug(
+            "Task retry scheduled",
+            task=entry.message.task,
+            attempt=entry.message.attempt,
+            message_id=str(entry.message.id),
+            entry_id=entry.id,
+            delay=delay,
+        )
+
         self._scheduler.delay(
             func=self._broker.retry,
-            delay=self._backoff(entry.message.attempt),
+            delay=delay,
             args=(entry,),
         )
 
@@ -339,10 +350,20 @@ class WorkerHandler:
         carrier: dict[str, str] | None = None
 
         if isinstance(self._broker, BrokerTelemetryMixin):
-            carrier = await self._broker.trace_context(
-                entry.queue,
-                str(entry.message.id),
-            )
+            try:
+                carrier = await self._broker.trace_context(
+                    entry.queue,
+                    str(entry.message.id),
+                )
+
+            except Exception:
+                logger.debug(
+                    "Trace context read failed",
+                    task=entry.message.task,
+                    message_id=str(entry.message.id),
+                    entry_id=entry.id,
+                    exc_info=True,
+                )
 
         with start_process_span(
             entry.message.task,

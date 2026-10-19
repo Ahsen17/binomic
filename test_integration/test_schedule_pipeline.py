@@ -6,15 +6,14 @@ subprocess.
 """
 
 import time
-from collections.abc import Awaitable, Callable
 from uuid import uuid4
 
-import anyio
 import pytest
 from redis.asyncio import Redis as AsyncRedis
 
 from binomic.broker import Message
 from binomic.client import Binomic, BinomicConfig
+from test_integration.helpers import wait_until
 from test_integration.schedule import DELAY_SECONDS, SCHEDULE_QUEUE
 from test_integration.schedule.tasks import DSN_ENV, KEY_ENV
 
@@ -22,21 +21,6 @@ TIMEOUT: float = 30.0
 # The client and the workers both derive the namespace from module_name.
 STREAM_KEY: str = f"test_integration.schedule:{SCHEDULE_QUEUE}:stream"
 GROUP: str = "test_integration.schedule"
-
-
-async def wait_until(
-    predicate: Callable[[], Awaitable[object]],
-    *,
-    timeout: float = TIMEOUT,
-) -> None:
-    """Poll `predicate` until its result is truthy, failing when it never is."""
-
-    with anyio.move_on_after(timeout):
-        while not await predicate():
-            await anyio.sleep(0.1)
-        return
-
-    pytest.fail(f"condition not met within {timeout}s")
 
 
 def make_client(broker_dsn: str) -> Binomic:
@@ -79,9 +63,15 @@ class TestSchedulePipeline:
             # this bound.
             assert elapsed >= DELAY_SECONDS * 2 / 3, f"ran after {elapsed}s"
             assert await redis_client.get(result_key) == "done"
-            pending = await redis_client.xpending(STREAM_KEY, GROUP)
 
-            assert pending["pending"] == 0
+            async def drained() -> bool:
+
+                pending = await redis_client.xpending(STREAM_KEY, GROUP)
+                return bool(pending["pending"] == 0)
+
+            # The task writes its result before returning, so the ack can
+            # still be in flight when the key first appears.
+            await wait_until(drained)
 
     async def test_interval_task_repeats_and_is_acked(
         self,

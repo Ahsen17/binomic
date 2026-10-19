@@ -9,6 +9,7 @@ with SIGSTOP, and a genuine master that has to notice and replace it.
 
 import os
 import signal
+from socket import gethostname
 
 import anyio
 import pytest
@@ -23,6 +24,10 @@ HEARTBEAT_INTERVAL: float = 1.0
 # queues SIGTERM until it is continued, so the stop path falls through to
 # SIGKILL and costs the full terminate timeout before the restart begins.
 RESTART_TIMEOUT: float = 40.0
+
+# The master mints consumer names with a hostname prefix so instances of
+# the same app sharing one Redis never collide in the consumer group.
+CONSUMER_0: str = f"{gethostname()}-consumer-0"
 
 
 @pytest.mark.integration
@@ -59,12 +64,12 @@ class TestMasterSupervision:
             # waiting on `_subprocesses` also means the cell is readable.
             with anyio.fail_after(RESTART_TIMEOUT):
                 while (
-                    "consumer-0" not in master._subprocesses
-                    or master._presence.presence().get("consumer-0", 0.0) == 0.0
+                    CONSUMER_0 not in master._subprocesses
+                    or master._presence.presence().get(CONSUMER_0, 0.0) == 0.0
                 ):
                     await anyio.sleep(0.05)
 
-            original = master._subprocesses["consumer-0"]
+            original = master._subprocesses[CONSUMER_0]
             original_pid = original.pid
             assert original_pid is not None
 
@@ -73,13 +78,13 @@ class TestMasterSupervision:
 
             # The premise of the case: frozen is not dead.
             assert original.is_alive(), "SIGSTOP should have left the process alive"
-            frozen_at = master._presence.presence().get("consumer-0", 0.0)
+            frozen_at = master._presence.presence().get(CONSUMER_0, 0.0)
 
             with anyio.fail_after(RESTART_TIMEOUT):
-                while master._subprocesses["consumer-0"].pid == original_pid:
+                while master._subprocesses[CONSUMER_0].pid == original_pid:
                     await anyio.sleep(0.05)
 
-            replacement = master._subprocesses["consumer-0"]
+            replacement = master._subprocesses[CONSUMER_0]
 
             assert replacement.pid != original_pid
 
@@ -87,7 +92,7 @@ class TestMasterSupervision:
             # replacement runs, and it got a fresh cell rather than the frozen
             # one, which would read as a worker that had just checked in.
             with anyio.fail_after(RESTART_TIMEOUT):
-                while master._presence.presence().get("consumer-0", 0.0) <= frozen_at:
+                while master._presence.presence().get(CONSUMER_0, 0.0) <= frozen_at:
                     await anyio.sleep(0.05)
 
             assert replacement.is_alive()

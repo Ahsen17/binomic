@@ -1,3 +1,4 @@
+import socket
 import time
 from multiprocessing import get_context
 from typing import TYPE_CHECKING, Any, Final, Literal
@@ -38,6 +39,10 @@ class Master:
         self._policy = policy
         self._method = method
         self._broker_kwargs = broker_kwargs
+
+        # Consumer names carry the hostname so instances of the same app
+        # sharing one Redis stay distinct identities in the consumer group.
+        self._hostname = socket.gethostname()
 
         self._subprocesses: dict[str, BaseProcess] = {}
         self._presence = MasterPresence()
@@ -113,7 +118,7 @@ class Master:
 
         try:
             for i in range(self._policy.workers):
-                self._run_proc(f"consumer-{i}")
+                self._run_proc(f"{self._hostname}-consumer-{i}")
 
             await self._visor()
 

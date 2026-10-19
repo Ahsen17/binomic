@@ -32,6 +32,10 @@ end
 local function dlq_hash_key(namespace, queue)
     return namespace .. ":" .. queue .. ":dlq:hash"
 end
+
+local function context_key(namespace, queue)
+    return namespace .. ":" .. queue .. ":context"
+end
 """
 
 _COMMON = _REPLY_ABOUT + _KEYS_GEN
@@ -43,6 +47,7 @@ local namespace = ARGV[1]
 local queue = ARGV[2]
 local message_json = ARGV[3]
 local enqueued_at = tonumber(ARGV[4])
+local context_json = ARGV[5]
 
 if not enqueued_at then
     return reply_error("Invalid `enqueued_at` value")
@@ -68,6 +73,7 @@ local entry = {{
     message = message,
     enqueued_at = enqueued_at,
 }}
+
 local stored = redis.call(
     "HSETNX", hk,
     msid, cjson.encode(entry)
@@ -76,6 +82,16 @@ local stored = redis.call(
 if stored == 0 then
     redis.call("XDEL", streamkey, msid)
     return reply_error("Failed to store message in hash")
+end
+
+-- Trace context lives in its own hash keyed by the message id, which
+-- survives retry and reclaim re-encodes. Ack/dead sweep it. Best effort:
+-- a context write failure must never fail the delivery itself.
+if context_json and context_json ~= "" then
+    redis.pcall(
+        "HSET", context_key(namespace, queue),
+        tostring(message.id), context_json
+    )
 end
 
 return reply_ok(entry)
@@ -174,6 +190,7 @@ _ACK = f"""\
 local namespace = ARGV[1]
 local queue = ARGV[2]
 local entry_id = ARGV[3]
+local message_id = ARGV[4]
 
 local hk = hash_key(namespace, queue)
 local sk = stream_key(namespace, queue)
@@ -181,6 +198,9 @@ local sk = stream_key(namespace, queue)
 redis.call("HDEL", hk, entry_id)
 local acked = redis.call("XACK", sk, namespace, entry_id)
 redis.call("XDEL", sk, entry_id)
+
+-- Context cleanup is best effort, after the ack itself has committed.
+redis.pcall("HDEL", context_key(namespace, queue), message_id)
 
 return reply_ok(acked)
 """
@@ -234,6 +254,12 @@ local set_ok = redis.call(
 redis.call("XACK", sk, namespace, entry_id)
 redis.call("XDEL", sk, entry_id)
 redis.call("HDEL", hk, entry_id)
+
+-- Context cleanup is best effort, after the DLQ move has committed.
+redis.pcall(
+    "HDEL", context_key(namespace, queue),
+    tostring(decoded.message.id)
+)
 
 return reply_ok(tonumber(set_ok))
 """
@@ -421,4 +447,42 @@ for i = 7, #ARGV do
 end
 
 return reply_ok(total_reclaimed)
+"""
+
+_OBSERVE = f"""\
+{_COMMON}
+
+local namespace = ARGV[1]
+local queue = ARGV[2]
+
+local sk = stream_key(namespace, queue)
+local depth = redis.call("XLEN", sk)
+
+local first = redis.call("XRANGE", sk, "-", "+", "COUNT", 1)
+local oldest = false
+if #first > 0 then
+    oldest = tonumber(string.match(first[1][1], "^(%d+)-"))
+end
+
+return reply_ok({{depth, oldest}})
+"""
+
+_CONTEXT = f"""\
+{_COMMON}
+
+local namespace = ARGV[1]
+local queue = ARGV[2]
+local message_id = ARGV[3]
+
+local raw = redis.call("HGET", context_key(namespace, queue), message_id)
+if not raw then
+    return reply_ok(cjson.null)
+end
+
+local ok, decoded = pcall(cjson.decode, raw)
+if not ok or type(decoded) ~= "table" then
+    return reply_error("Invalid stored trace context")
+end
+
+return reply_ok(decoded)
 """

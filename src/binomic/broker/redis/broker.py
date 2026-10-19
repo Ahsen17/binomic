@@ -1,20 +1,27 @@
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Final, cast
 
+import msgspec
 import structlog
 from redis.asyncio import BlockingConnectionPool, Redis
 from redis.exceptions import ResponseError
 
 from binomic.broker.message import MessageEntry
-from binomic.broker.protocols import Broker, BrokerLifecycleMixin
+from binomic.broker.protocols import (
+    Broker,
+    BrokerLifecycleMixin,
+    BrokerTelemetryMixin,
+)
 
 from .schemas import ScriptResponse
 from .scripts import (
     _ACK,
     _ACQUIRE,
+    _CONTEXT,
     _DEAD,
     _ENQUEUE,
+    _OBSERVE,
     _RECLAIM,
     _RETRY,
 )
@@ -36,12 +43,14 @@ SCRIPTS: Final[dict[str, str]] = {
     "dead": _DEAD,
     "retry": _RETRY,
     "reclaim": _RECLAIM,
+    "observe": _OBSERVE,
+    "context": _CONTEXT,
 }
 
 logger = structlog.stdlib.get_logger(__name__)
 
 
-class RedisBroker(Broker, BrokerLifecycleMixin):
+class RedisBroker(Broker, BrokerLifecycleMixin, BrokerTelemetryMixin):
     """Redis Streams broker backed by atomic Lua scripts.
 
     ``namespace`` is both the key prefix (``{namespace}:{queue}:stream``) and
@@ -94,6 +103,12 @@ class RedisBroker(Broker, BrokerLifecycleMixin):
 
         self._running = True
 
+        logger.info(
+            "Broker started",
+            namespace=self._group,
+            queues=list(self._queues),
+        )
+
     async def close(self) -> None:
 
         if not self._running:
@@ -109,6 +124,12 @@ class RedisBroker(Broker, BrokerLifecycleMixin):
             self._scripts.clear()
 
         self._running = False
+
+        logger.debug(
+            "Broker closed",
+            namespace=self._group,
+            queues=list(self._queues),
+        )
 
     def _ensure_client(self) -> "Redis":
 
@@ -184,6 +205,7 @@ class RedisBroker(Broker, BrokerLifecycleMixin):
         self,
         queue: str,
         message: "Message",
+        context: "Mapping[str, str] | None" = None,
     ) -> "MessageEntry | None":
 
         resp = await self._invoke_script(
@@ -194,6 +216,7 @@ class RedisBroker(Broker, BrokerLifecycleMixin):
                 queue,
                 message.to_json(),
                 time.time(),
+                msgspec.json.encode(dict(context)) if context else b"",
             ],
         )
 
@@ -226,7 +249,12 @@ class RedisBroker(Broker, BrokerLifecycleMixin):
         resp = await self._invoke_script(
             script="ack",
             keys=[],
-            args=[self._group, entry.queue, entry.id],
+            args=[
+                self._group,
+                entry.queue,
+                entry.id,
+                str(entry.message.id),
+            ],
         )
 
         return 0 if resp is None else cast("int", resp)
@@ -279,3 +307,47 @@ class RedisBroker(Broker, BrokerLifecycleMixin):
         )
 
         return 0 if resp is None else cast("int", resp)
+
+    async def trace_context(
+        self,
+        queue: str,
+        message_id: str,
+    ) -> "dict[str, str] | None":
+
+        resp = await self._invoke_script(
+            script="context",
+            keys=[],
+            args=[self._group, queue, message_id],
+        )
+
+        if not isinstance(resp, dict):
+            return None
+
+        carrier = cast("dict[str, Any]", resp)
+
+        return {
+            key: value
+            for key, value in carrier.items()
+            if isinstance(key, str) and isinstance(value, str)
+        }
+
+    async def observe(self, queue: str) -> "tuple[int, float | None] | None":
+
+        resp = await self._invoke_script(
+            script="observe",
+            keys=[],
+            args=[self._group, queue],
+        )
+
+        if resp is None:
+            return None
+
+        depth = cast("int", resp[0])
+
+        # Lua `false` round-trips as JSON `false` -> Python `False`.
+        oldest_ms = cast("float | None", resp[1] or None)
+
+        if oldest_ms is None:
+            return depth, None
+
+        return depth, max(0.0, time.time() - oldest_ms / 1000)

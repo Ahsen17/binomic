@@ -1,3 +1,53 @@
+## [0.3.0] - 2026-10-19
+
+### 🚀 Features
+
+- Prefix consumer names with the hostname
+- Sweep empty stale consumers on reclaim
+- Add on_dead notify hook to TaskSpec and worker
+- Stamp enqueued_at with full-precision seconds
+- Promote the worker tuning knobs to BinomicConfig
+- *(otel)* Add the optional OpenTelemetry gateway module
+- *(broker)* Persist delivery trace context in a side hash
+- *(client)* Emit producer spans behind the telemetry switch
+- *(worker)* Emit process spans, metrics and lifecycle logs
+
+### 🐛 Bug Fixes
+
+- *(client)* Only hand trace context to capable brokers
+- *(telemetry)* Harden degradation paths and log retry scheduling
+- *(master)* Include the master pid in consumer names
+
+### 📚 Documentation
+
+- Update changelog
+- Document the on_dead dead-letter hook
+- Tick the multi-instance roadmap item
+- Describe the consumer sweep in both reliability guides
+- Mark bounded storage done and correct its premise
+- Tick the configuration roadmap item
+- Cover the new BinomicConfig knobs in both quick starts
+- Add the observability guide in both languages
+- Document the custom broker telemetry fallback
+- Align observability docs with the implementation
+- Update the consumer naming contract
+
+### 🎨 Styling
+
+- Wrap long reclaim call sites
+
+### 🧪 Testing
+
+- Cover on_dead hook paths and steady the timeout tests
+- Cover the consumer sweep on real Redis
+- *(integration)* Verify telemetry collection inside a worker subprocess
+- *(integration)* Wait for consumer state instead of reading once
+
+### ⚙️ Miscellaneous Tasks
+
+- Upgrade to v0.3.0
+
+
 ## [0.2.0] - 2026-10-18
 
 ### 🚀 Features

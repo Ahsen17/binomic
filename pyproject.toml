@@ -18,6 +18,11 @@ dependencies = [
     "uuid-utils",
 ]
 
+[project.optional-dependencies]
+otel = [
+    "opentelemetry-api>=1.15,<2",
+]
+
 [project.urls]
 Homepage = "https://ahsen17.github.io/binomic"
 Repository = "https://github.com/Ahsen17/binomic"
@@ -52,6 +57,9 @@ lint = [
 test = [
   "coverage",
   "fakeredis[lua]",
+  # Official in-memory exporters/readers: the assertion surface for the
+  # telemetry gateways, the SDK analogue of fakeredis. Pulls opentelemetry-api.
+  "opentelemetry-sdk>=1.15,<2",
   "pytest",
   "pytest-asyncio",
   "pytest-cov",
@@ -136,7 +144,7 @@ max-complexity = 12
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["E402", "F401"]
-"**/migrations/*.py" = ["Q000"]
+"src/binomic/otel/telemetry.py" = ["PLC0415"]
 "**/{tests,docs,tools}/*" = ["E402"]
 "docs/**/*.*" = ["S", "B", "DTZ", "A", "TC", "ERA", "D", "RET"]
 "tests/**/*.*" = [
@@ -232,8 +240,7 @@ markers = [
   "integration: end-to-end tests that drive the real assembly pipeline in subprocesses",
 ]
 filterwarnings = [
-  "ignore::DeprecationWarning",
-  "ignore::SyntaxWarning:jieba.*"
+  "ignore::DeprecationWarning"
 ]
 testpaths = ["tests", "test_integration"]
 

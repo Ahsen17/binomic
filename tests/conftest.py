@@ -7,6 +7,12 @@ from typing import Any, cast
 import pytest
 import structlog
 from fakeredis import FakeAsyncRedis, FakeServer
+from opentelemetry import metrics, trace
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from binomic.broker import Message, MessageEntry, RedisBroker
 
@@ -28,6 +34,26 @@ def structlog_stdlib() -> Iterator[None]:
     structlog.stdlib.recreate_defaults(log_level=None)
     yield
     structlog.configure(**saved)
+
+
+@pytest.fixture(scope="session")
+def otel_sdk() -> "tuple[InMemorySpanExporter, InMemoryMetricReader]":
+    """Install SDK providers once per process and expose in-memory sinks.
+
+    OpenTelemetry allows a single global provider per process, so this is
+    session-scoped; tests clear the span exporter and read snapshots from
+    the metric reader between cases.
+    """
+
+    span_exporter = InMemorySpanExporter()
+    tracer_provider = TracerProvider()
+    tracer_provider.add_span_processor(SimpleSpanProcessor(span_exporter))
+    trace.set_tracer_provider(tracer_provider)
+
+    metric_reader = InMemoryMetricReader()
+    metrics.set_meter_provider(MeterProvider(metric_readers=[metric_reader]))
+
+    return span_exporter, metric_reader
 
 
 @pytest.fixture

@@ -3,12 +3,26 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any, Self
 
 import anyio
+import structlog
 from anyio import AsyncContextManagerMixin
 
 from binomic.broker import (
     BrokerFactory,
     BrokerLifecycleMixin,
+    BrokerTelemetryMixin,
     Message,
+)
+from binomic.otel import (
+    MESSAGING_DESTINATION_NAME,
+    MESSAGING_MESSAGE_ID,
+    MESSAGING_OPERATION_NAME,
+    MESSAGING_SYSTEM,
+    MESSAGING_SYSTEM_VALUE,
+    TASK_NAME,
+    capture_context,
+    create_counter,
+    ensure_available,
+    start_producer_span,
 )
 from binomic.task import (
     TaskRegistry,
@@ -31,6 +45,8 @@ __all__ = (
     "Binomic",
     "BinomicFactory",
 )
+
+logger = structlog.stdlib.get_logger(__name__)
 
 
 class Binomic(AsyncContextManagerMixin):
@@ -58,6 +74,16 @@ class Binomic(AsyncContextManagerMixin):
         self._broker: Broker | None = None
         self._scheduler: TaskScheduler | None = None
         self._registry = TaskRegistry()
+
+        self._submissions: Any | None = None
+
+        if self._config.otel_enabled:
+            ensure_available()
+
+            self._submissions = create_counter(
+                name="binomic.task.submissions",
+                unit="{task}",
+            )
 
         # Register tasks from module
         for spec in autodiscover(self._module_name):
@@ -91,16 +117,77 @@ class Binomic(AsyncContextManagerMixin):
         await self._ensure_broker()
         self._ensure_scheduler()
 
+        logger.info("Client started", module=self._module_name)
+
     async def close(self) -> None:
+
+        closed = False
 
         if self._broker is not None:
             if isinstance(self._broker, BrokerLifecycleMixin):
                 await self._broker.close()
             self._broker = None
+            closed = True
 
         if self._scheduler is not None:
             self._scheduler.close()
             self._scheduler = None
+            closed = True
+
+        if closed:
+            logger.info("Client closed", module=self._module_name)
+
+    def _span_attributes(self, queue: str, message: "Message") -> dict[str, str]:
+
+        return {
+            MESSAGING_SYSTEM: MESSAGING_SYSTEM_VALUE,
+            MESSAGING_OPERATION_NAME: "create",
+            MESSAGING_DESTINATION_NAME: queue,
+            MESSAGING_MESSAGE_ID: str(message.id),
+            TASK_NAME: message.task,
+        }
+
+    def _capture(self, queue: str, message: "Message") -> dict[str, str]:
+        """Produce the creation span and capture its context for delivery."""
+
+        with start_producer_span(
+            queue,
+            self._span_attributes(queue, message),
+        ):
+            return capture_context()
+
+    async def _deliver(
+        self,
+        queue: str,
+        message: "Message",
+        carrier: dict[str, str] | None = None,
+    ) -> None:
+        """Enqueue, handing the trace context only to capable brokers."""
+
+        broker = await self._ensure_broker()
+
+        if carrier and isinstance(broker, BrokerTelemetryMixin):
+            await broker.enqueue(
+                queue=queue,
+                message=message,
+                context=carrier,
+            )
+            return
+
+        await broker.enqueue(queue=queue, message=message)
+
+    async def _enqueue(self, queue: str, message: "Message") -> None:
+        """Enqueue with a producer span; shared by all delivery paths."""
+
+        if not self._config.otel_enabled:
+            await self._deliver(queue, message)
+            return
+
+        with start_producer_span(
+            queue,
+            self._span_attributes(queue, message),
+        ):
+            await self._deliver(queue, message, capture_context())
 
     async def submit(self, message: "Message") -> None:
 
@@ -115,10 +202,7 @@ class Binomic(AsyncContextManagerMixin):
                 # `_checked_enqueue` (raise on None) for all enqueue-fed
                 # paths, a submit docstring contract (delay success only
                 # means scheduled), and optionally a bounded in-job retry.
-                await (await self._ensure_broker()).enqueue(
-                    queue=spec.queue,
-                    message=message,
-                )
+                await self._enqueue(spec.queue, message)
 
             case "delay":
                 if spec.delay is None or spec.delay <= 0:
@@ -127,12 +211,18 @@ class Binomic(AsyncContextManagerMixin):
                         "and ensure it's greater than 0",
                     )
 
+                carrier: dict[str, str] = {}
+
+                if self._config.otel_enabled:
+                    carrier = self._capture(spec.queue, message)
+
                 self._ensure_scheduler().delay(
-                    func=(await self._ensure_broker()).enqueue,
+                    func=self._deliver,
                     delay=spec.delay,
                     args=(
                         spec.queue,
                         message,
+                        carrier or None,
                     ),
                 )
 
@@ -142,10 +232,24 @@ class Binomic(AsyncContextManagerMixin):
                     f"direct and delay tasks. Received `{spec.mode}` task."
                 )
 
+        logger.debug(
+            "Task submitted",
+            task=message.task,
+            queue=spec.queue,
+            message_id=str(message.id),
+            mode=spec.mode,
+        )
+
+        if self._submissions is not None:
+            self._submissions.add(
+                1,
+                attributes={TASK_NAME: message.task},
+            )
+
     async def _register_interval_cron_tasks(self) -> None:
 
         scheduler = self._ensure_scheduler()
-        broker = await self._ensure_broker()
+        await self._ensure_broker()
 
         for spec in self._registry:
             match spec.mode:
@@ -157,7 +261,7 @@ class Binomic(AsyncContextManagerMixin):
                         )
 
                     scheduler.interval(
-                        func=broker.enqueue,
+                        func=self._enqueue,
                         interval=spec.interval,
                         args=(spec.queue, Message(task=spec.name)),
                     )
@@ -170,10 +274,20 @@ class Binomic(AsyncContextManagerMixin):
                         )
 
                     scheduler.cron(
-                        func=broker.enqueue,
+                        func=self._enqueue,
                         cron=spec.cron,
                         args=(spec.queue, Message(task=spec.name)),
                     )
+
+                case _:
+                    continue
+
+            logger.info(
+                "Task schedule registered",
+                task=spec.name,
+                mode=spec.mode,
+                queue=spec.queue,
+            )
 
     @contextlib.asynccontextmanager
     async def __asynccontextmanager__(self) -> AsyncGenerator[Self, None]:
@@ -192,6 +306,8 @@ class Binomic(AsyncContextManagerMixin):
                     poll_interval=self._config.poll_interval,
                     heartbeat_interval=self._config.heartbeat_interval,
                     reclaim_interval=self._config.reclaim_interval,
+                    worker_init=self._config.worker_init,
+                    otel_enabled=self._config.otel_enabled,
                 ),
             ),
             method="spawn",

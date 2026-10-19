@@ -10,9 +10,12 @@ from typing import Any, cast
 
 import anyio
 import pytest
+from opentelemetry import trace as otel_trace
+from opentelemetry.trace import SpanKind, StatusCode
 from pytest_mock import MockerFixture
 
 from binomic.broker import Message, MessageEntry, RedisBroker
+from binomic.otel import telemetry
 from binomic.worker import WorkerHandler, WorkerPolicy
 
 STREAM_KEY = "binomic:default:stream"
@@ -455,3 +458,234 @@ class TestReclaim:
             ),
             count=100,
         )
+
+
+class TestTelemetry:
+    """The otel_enabled branch: spans, metrics and logs around execution."""
+
+    async def test_disabled_emits_no_process_span(
+        self,
+        make_handler: Callable[..., Any],
+        deliver_entry: Deliver,
+        otel_sdk: Any,
+    ) -> None:
+
+        span_exporter, _ = otel_sdk
+        span_exporter.clear()
+
+        e = await make_handler()
+        await e.broker.enqueue("default", Message(task="ok"))
+        entry = await deliver_entry(e.broker, "default", "c1")
+
+        await e.handler.handle(entry)
+
+        assert not span_exporter.get_finished_spans()
+
+    async def test_process_span_is_parented_to_the_stored_context(
+        self,
+        make_handler: Callable[..., Any],
+        deliver_entry: Deliver,
+        otel_sdk: Any,
+    ) -> None:
+
+        span_exporter, metric_reader = otel_sdk
+        span_exporter.clear()
+
+        with otel_trace.get_tracer("test").start_as_current_span("submit") as submit_span:
+            carrier = telemetry.capture_context()
+
+        trace_id = submit_span.get_span_context().trace_id
+
+        e = await make_handler(otel_enabled=True)
+        await e.broker.enqueue(
+            "default",
+            Message(task="ok"),
+            context=carrier,
+        )
+        entry = await deliver_entry(e.broker, "default", "c1")
+
+        await e.handler.handle(entry)
+
+        (process,) = [
+            span
+            for span in span_exporter.get_finished_spans()
+            if span.name == "process ok"
+        ]
+
+        assert process.kind is SpanKind.CONSUMER
+        assert process.parent is not None
+        assert process.parent.trace_id == trace_id
+        assert process.attributes is not None
+        assert process.attributes["messaging.operation.name"] == "process"
+        assert process.attributes["binomic.task.name"] == "ok"
+
+        metrics_data = metric_reader.get_metrics_data()
+        assert metrics_data is not None
+
+        recorded = {
+            metric.name: metric.data.data_points
+            for resource in metrics_data.resource_metrics
+            for scope in resource.scope_metrics
+            for metric in scope.metrics
+        }
+
+        executions = recorded.get("binomic.task.executions", [])
+        assert any(
+            point.attributes.get("binomic.task.name") == "ok" for point in executions
+        )
+        assert "binomic.task.execution.duration" in recorded
+        assert "binomic.task.delivery.lag" in recorded
+        assert "binomic.task.acks" in recorded
+
+    async def test_failure_marks_the_span_and_logs(
+        self,
+        make_handler: Callable[..., Any],
+        deliver_entry: Deliver,
+        otel_sdk: Any,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+
+        span_exporter, _ = otel_sdk
+        span_exporter.clear()
+
+        e = await make_handler(otel_enabled=True, max_attempts=1)
+        await e.broker.enqueue("default", Message(task="boom"))
+        entry = await deliver_entry(e.broker, "default", "c1")
+
+        with caplog.at_level(logging.WARNING, logger="binomic.worker.handler"):
+            await e.handler.handle(entry)
+
+        (process,) = [
+            span
+            for span in span_exporter.get_finished_spans()
+            if span.name == "process boom"
+        ]
+
+        assert process.status.status_code is StatusCode.ERROR
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("Task execution failed" in message for message in messages)
+        assert any("Task moved to DLQ" in message for message in messages)
+
+    async def test_retry_records_its_counter(
+        self,
+        make_handler: Callable[..., Any],
+        deliver_entry: Deliver,
+        set_backoff: Callable[[float], None],
+        otel_sdk: Any,
+    ) -> None:
+
+        set_backoff(60.0)
+
+        e = await make_handler(otel_enabled=True)
+        await e.broker.enqueue("default", Message(task="boom"))
+        entry = await deliver_entry(e.broker, "default", "c1")
+
+        await e.handler.handle(entry)
+
+        metrics_data = otel_sdk[1].get_metrics_data()
+        assert metrics_data is not None
+
+        metric_names = {
+            metric.name
+            for resource in metrics_data.resource_metrics
+            for scope in resource.scope_metrics
+            for metric in scope.metrics
+        }
+
+        assert "binomic.task.retries" in metric_names
+
+    async def test_expired_entry_logs_before_dlq(
+        self,
+        make_handler: Callable[..., Any],
+        deliver_entry: Deliver,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+
+        e = await make_handler()
+        await e.broker.enqueue("default", Message(task="ok"))
+        entry = await deliver_entry(e.broker, "default", "c1")
+        entry.enqueued_at = int(time.time()) - 3600
+
+        with caplog.at_level(logging.WARNING, logger="binomic.worker.handler"):
+            await e.handler.handle(entry)
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("Task expired" in message for message in messages)
+        assert any("Task moved to DLQ" in message for message in messages)
+
+
+class TestTelemetryGating:
+    """The switch is the single source of truth for telemetry side effects."""
+
+    async def test_disabled_failure_never_touches_spans(
+        self,
+        make_handler: Callable[..., Any],
+        deliver_entry: Deliver,
+        mocker: Any,
+    ) -> None:
+
+        marks: list[BaseException] = []
+        mocker.patch(
+            "binomic.worker.handler.mark_span_error",
+            side_effect=marks.append,
+        )
+
+        e = await make_handler(max_attempts=1)
+        await e.broker.enqueue("default", Message(task="boom"))
+        entry = await deliver_entry(e.broker, "default", "c1")
+
+        await e.handler.handle(entry)
+
+        assert marks == []
+
+    async def test_missing_context_falls_back_to_a_root_span(
+        self,
+        make_handler: Callable[..., Any],
+        deliver_entry: Deliver,
+        otel_sdk: Any,
+    ) -> None:
+
+        span_exporter, _ = otel_sdk
+        span_exporter.clear()
+
+        e = await make_handler(otel_enabled=True)
+        await e.broker.enqueue("default", Message(task="ok"))
+        entry = await deliver_entry(e.broker, "default", "c1")
+
+        await e.handler.handle(entry)
+
+        (process,) = [
+            span
+            for span in span_exporter.get_finished_spans()
+            if span.name == "process ok"
+        ]
+
+        assert process.parent is None
+
+    async def test_reclaim_records_its_counter(
+        self,
+        make_handler: Callable[..., Any],
+        mocker: Any,
+        otel_sdk: Any,
+    ) -> None:
+
+        _, metric_reader = otel_sdk
+        e = await make_handler(otel_enabled=True)
+        mocker.patch.object(e.broker, "reclaim", return_value=2)
+
+        await e.handler.reclaim()
+
+        metrics_data = metric_reader.get_metrics_data()
+        assert metrics_data is not None
+
+        points = [
+            point
+            for resource in metrics_data.resource_metrics
+            for scope in resource.scope_metrics
+            for metric in scope.metrics
+            if metric.name == "binomic.task.reclaims"
+            for point in metric.data.data_points
+        ]
+
+        assert any(point.value >= 2 for point in points)

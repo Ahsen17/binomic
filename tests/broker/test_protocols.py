@@ -1,4 +1,9 @@
-from binomic.broker import Broker, BrokerLifecycleMixin, RedisBroker
+from binomic.broker import (
+    Broker,
+    BrokerLifecycleMixin,
+    BrokerTelemetryMixin,
+    RedisBroker,
+)
 
 
 class DuckBroker:
@@ -15,7 +20,7 @@ class DuckBroker:
     async def retry(self, entry: object) -> None: ...
 
     async def reclaim(
-        self, consumer: object, min_idle_ms: object, count: object
+        self, consumer: object, min_idle_ms: object, count: object, gc_idle_ms: object
     ) -> None: ...
 
     async def start(self) -> None: ...
@@ -28,6 +33,7 @@ class TestProtocols:
 
         assert isinstance(DuckBroker(), BrokerLifecycleMixin)
         assert isinstance(DuckBroker(), Broker)
+        assert not isinstance(DuckBroker(), BrokerTelemetryMixin)
         assert not isinstance(object(), BrokerLifecycleMixin)
 
     def test_redis_broker_satisfies_both(self) -> None:
@@ -40,3 +46,4 @@ class TestProtocols:
 
         assert isinstance(broker, Broker)
         assert isinstance(broker, BrokerLifecycleMixin)
+        assert isinstance(broker, BrokerTelemetryMixin)

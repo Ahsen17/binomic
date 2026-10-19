@@ -32,7 +32,7 @@ async def stored_entry_ids(broker: RedisBroker) -> list[str]:
 
 
 class TestScripts:
-    def test_all_six_operations_are_registered(self) -> None:
+    def test_all_operations_are_registered(self) -> None:
 
         assert set(SCRIPTS) == {
             "enqueue",
@@ -41,6 +41,8 @@ class TestScripts:
             "dead",
             "retry",
             "reclaim",
+            "observe",
+            "context",
         }
 
     def test_scripts_embed_the_shared_preamble_once(self) -> None:
@@ -555,3 +557,172 @@ class TestInvokeScript:
         assert any(
             "Failed to invoke script" in record.getMessage() for record in caplog.records
         )
+
+
+class TestTraceContext:
+    """Trace context is stored apart from the envelope, keyed by message id."""
+
+    async def test_enqueue_stores_context_beside_the_envelope(
+        self,
+        make_broker: Callable[..., RedisBroker],
+        make_message: Callable[..., Message],
+    ) -> None:
+
+        broker = make_broker(["default"])
+        await broker.start()
+
+        message = make_message(task="ok")
+        traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+
+        entry = await broker.enqueue(
+            "default",
+            message,
+            context={
+                "traceparent": traceparent,
+                "baggage": "tenant=acme",
+            },
+        )
+
+        assert entry is not None
+
+        raw = await broker._ensure_client().hget(
+            f"{broker._group}:default:hash",
+            entry.id,
+        )
+        assert raw is not None
+        # The envelope itself carries no telemetry fields.
+        assert "traceparent" not in json.loads(raw)
+
+        assert await broker.trace_context("default", str(message.id)) == {
+            "traceparent": traceparent,
+            "baggage": "tenant=acme",
+        }
+
+        await broker.close()
+
+    async def test_enqueue_without_context_stores_nothing(
+        self,
+        make_broker: Callable[..., RedisBroker],
+        make_message: Callable[..., Message],
+    ) -> None:
+
+        broker = make_broker(["default"])
+        await broker.start()
+
+        message = make_message(task="ok")
+        await broker.enqueue("default", message)
+
+        assert await broker.trace_context("default", str(message.id)) is None
+
+        await broker.close()
+
+    async def test_retry_keeps_the_context_readable(
+        self,
+        make_broker: Callable[..., RedisBroker],
+        make_message: Callable[..., Message],
+        deliver_entry: Deliver,
+    ) -> None:
+
+        broker = make_broker(["default"])
+        await broker.start()
+
+        message = make_message(task="ok")
+        await broker.enqueue(
+            "default",
+            message,
+            context={
+                "traceparent": (
+                    "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+                ),
+            },
+        )
+        entry = await deliver_entry(broker, "default", "c1")
+
+        assert await broker.retry(entry) == 1
+        # Same message id, so the context needs no migration on redelivery.
+        context = await broker.trace_context("default", str(message.id))
+        assert context is not None
+        assert "traceparent" in context
+
+        await broker.close()
+
+    async def test_ack_sweeps_the_context(
+        self,
+        make_broker: Callable[..., RedisBroker],
+        make_message: Callable[..., Message],
+        deliver_entry: Deliver,
+    ) -> None:
+
+        broker = make_broker(["default"])
+        await broker.start()
+
+        message = make_message(task="ok")
+        await broker.enqueue(
+            "default",
+            message,
+            context={
+                "traceparent": (
+                    "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+                ),
+            },
+        )
+        entry = await deliver_entry(broker, "default", "c1")
+
+        await broker.ack(entry)
+
+        assert await broker.trace_context("default", str(message.id)) is None
+
+        await broker.close()
+
+    async def test_dead_sweeps_the_context(
+        self,
+        make_broker: Callable[..., RedisBroker],
+        make_message: Callable[..., Message],
+        deliver_entry: Deliver,
+    ) -> None:
+
+        broker = make_broker(["default"])
+        await broker.start()
+
+        message = make_message(task="ok")
+        await broker.enqueue(
+            "default",
+            message,
+            context={
+                "traceparent": (
+                    "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+                ),
+            },
+        )
+        entry = await deliver_entry(broker, "default", "c1")
+
+        await broker.dead(entry)
+
+        assert await broker.trace_context("default", str(message.id)) is None
+
+        await broker.close()
+
+
+class TestObserve:
+    async def test_reports_depth_and_oldest_age(
+        self,
+        make_broker: Callable[..., RedisBroker],
+        make_message: Callable[..., Message],
+    ) -> None:
+
+        broker = make_broker(["default"])
+        await broker.start()
+
+        assert await broker.observe("default") == (0, None)
+
+        await broker.enqueue("default", make_message(task="ok"))
+        await broker.enqueue("default", make_message(task="ok"))
+
+        observed = await broker.observe("default")
+
+        assert observed is not None
+        depth, age = observed
+        assert depth == 2
+        assert age is not None and age >= 0
+
+        await broker.close()

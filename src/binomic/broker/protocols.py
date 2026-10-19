@@ -41,6 +41,7 @@ class Broker(Protocol):
         consumer: str,
         min_idle_ms: int,
         count: int,
+        gc_idle_ms: int,
     ) -> int: ...
 
 

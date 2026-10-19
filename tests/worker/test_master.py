@@ -1,6 +1,7 @@
 import time
 from collections.abc import Callable
 from multiprocessing import Process, get_context
+from socket import gethostname
 from typing import Any
 
 import anyio
@@ -200,7 +201,7 @@ class TestMasterStart:
 
         await master.start()
 
-        assert set(master._subprocesses) == {"consumer-0"}
+        assert set(master._subprocesses) == {f"{gethostname()}-consumer-0"}
         closed.assert_awaited_once()
 
     async def test_starts_worker_per_configured_worker(
@@ -222,9 +223,7 @@ class TestMasterStart:
         await master.start()
 
         assert [call.args[0] for call in started.call_args_list] == [
-            "consumer-0",
-            "consumer-1",
-            "consumer-2",
+            f"{gethostname()}-consumer-{i}" for i in range(3)
         ]
 
     async def test_closes_workers_when_supervision_fails(

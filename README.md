@@ -108,7 +108,9 @@ async with binomic:
 只支持 `direct` 与 `delay` 两种模式：`cron` 与 `interval` 任务在客户端启动时自动注册，
 对其调用 `submit` 会抛 `ValueError`。Redis key 前缀与消费者组名（`namespace`）
 由客户端在内部按 `module_name` 派生，Worker 侧同样派生，两侧自动落在同一命名空间；
-它不是用户面参数。
+它不是用户面参数。Worker 的调节旋钮同样是 `BinomicConfig` 字段：
+`task_timeout` / `read_count` / `poll_interval` / `heartbeat_interval` /
+`reclaim_interval`，语义见[可靠性指南](docs/guide/reliability.md)。
 
 ### 3. Litestar 应用中集成
 
@@ -171,15 +173,16 @@ flowchart TD
 
 - [ ] **P0 · 延时作业持久化** —— `delay` 模式的提交仍依赖客户端进程内存中的调度器，
   进程退出即丢；需要将延时作业落盘（Redis 侧排队）
-- [ ] **P0 · 存储有界** —— ack/dead/reclaim 已对已完成的 stream 条目做 `XDEL` 清理，
-  但 stream 底层 radix 树仍随历史消息缓慢增长，需要 `XTRIM`/`MINID` 修剪策略
-- [ ] **P1 · 配置开放** —— 将 `task_timeout` / `heartbeat_interval` /
-  `reclaim_interval` / `read_count` / `poll_interval` 提升为 `BinomicConfig` 字段
-  （当前为 `WorkerPolicy` 的内部默认值，用户面不可调）
+- [x] **P0 · 存储有界** —— ack/dead/reclaim 对终态条目做 `XDEL` 清理；radix 树节点在
+  整节点删空后即释放，主队列实为滑动窗口、不随历史增长（已实测验证）。DLQ 有意不自动
+  清理（审计/重放面），保留策略如需再另行迭代
+- [x] **P1 · 配置开放** —— `task_timeout` / `heartbeat_interval` /
+  `reclaim_interval` / `read_count` / `poll_interval` 已提升为 `BinomicConfig` 字段，
+  进 context 时映射进 `WorkerPolicy`
 - [x] **P1 · 死信队列** —— 超时、超龄与超出 `max_attempts` 的消息进入 DLQ
   （`{namespace}:{queue}:dlq:stream` + `:dlq:hash`），可检查、可重放
-- [ ] **P2 · 多实例** —— consumer 名唯一化（如实例前缀），支持同一 Redis 库上并存
-  多个客户端实例
+- [x] **P2 · 多实例** —— consumer 名唯一化（hostname 前缀）+ reclaim 顺带清扫
+  空 PEL 的死 consumer，支持同一 Redis 库上并存多个客户端实例
 - [ ] **P2 · 可观测性** —— 提供 metrics 挂钩（队列深度、滞留消息、worker 重启计数等），
   弥补心跳转入进程内后失去的外部观测面
 

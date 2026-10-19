@@ -77,7 +77,11 @@ async with binomic:
 - in `BinomicConfig`, `workers` is the number of worker subprocesses the
   master spawns, `concurrency` is the number of tasks each worker runs
   concurrently, and `max_attempts` is the attempt budget for a single message —
-  see [Reliability](reliability.md) for its semantics;
+  see [Reliability](reliability.md) for its semantics; `task_timeout` (total
+  delivery deadline, in seconds), `read_count` and `poll_interval` (the fetch
+  loop), and `heartbeat_interval` and `reclaim_interval` (the liveness beat
+  and crash-recovery cadence) are fields too, with defaults in the API
+  reference;
 - a `Message`'s `task` is the task name and `args` / `kwargs` carry the call
   arguments (the example above calls `example` with `index=1`). Which stream a
   message lands in is decided by the **queue in the task declaration** — a

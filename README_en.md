@@ -120,7 +120,9 @@ the client on delivery (not onto the `Message`), so it needs no manual
 assignment. `submit` supports
 only the `direct` and `delay` modes: `cron` and `interval` tasks are registered
 automatically when the client starts, and calling `submit` on them raises
-`ValueError`. The Redis key prefix and consumer group name (`namespace`) are
+`ValueError`. The worker tuning knobs are `BinomicConfig` fields too:
+`task_timeout` / `read_count` / `poll_interval` / `heartbeat_interval` /
+`reclaim_interval` — see the [reliability guide](docs/en/guide/reliability.md). The Redis key prefix and consumer group name (`namespace`) are
 derived internally from `module_name` by both the client and the workers, so
 the two sides land on the same namespace automatically; it is not a
 user-facing parameter.
@@ -201,17 +203,20 @@ checked box means done. For what has landed, see
 - [ ] **P0 · Persisted delayed jobs** -- `delay`-mode submissions still depend
   on the scheduler living in the client process's memory and are lost on exit;
   they need to be persisted (queued on the Redis side)
-- [ ] **P0 · Bounded storage** -- ack/dead/reclaim already `XDEL` completed
-  stream entries, but the underlying radix tree still grows slowly with
-  message history; a `XTRIM`/`MINID` policy is needed
-- [ ] **P1 · Configuration** -- promote `task_timeout` / `heartbeat_interval` /
-  `reclaim_interval` / `read_count` / `poll_interval` to `BinomicConfig` fields
-  (they are internal `WorkerPolicy` defaults today, not user-facing)
+- [x] **P0 · Bounded storage** -- ack/dead/reclaim `XDEL` terminal entries;
+  radix-tree nodes are released once fully deleted, so live queues are a
+  sliding window that does not grow with history (verified empirically). The
+  DLQ is deliberately never auto-pruned (audit/replay surface); iterate on a
+  retention policy only if it is ever needed
+- [x] **P1 · Configuration** -- `task_timeout` / `heartbeat_interval` /
+  `reclaim_interval` / `read_count` / `poll_interval` are now `BinomicConfig`
+  fields, mapped into the `WorkerPolicy` on context entry
 - [x] **P1 · Dead-letter queue** -- timed-out, stale and exhausted messages
   land in the DLQ (`{namespace}:{queue}:dlq:stream` + `:dlq:hash`), inspectable
   and replayable
-- [ ] **P2 · Multi-instance** -- make consumer names unique (e.g. an instance
-  prefix) so several client instances can share one Redis database
+- [x] **P2 · Multi-instance** -- consumer names are unique (a hostname
+  prefix) and reclaim sweeps away dead empty-PEL consumers, so several
+  client instances can share one Redis database
 - [ ] **P2 · Observability** -- expose metrics hooks (queue depth, stranded
   messages, worker restarts, ...), covering the external visibility lost when
   the heartbeat moved in-process

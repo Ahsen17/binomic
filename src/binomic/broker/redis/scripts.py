@@ -303,15 +303,17 @@ local consumer = ARGV[2]
 local min_idle_ms = tonumber(ARGV[3])
 local count = tonumber(ARGV[4])
 local enqueued_at = tonumber(ARGV[5])
+local gc_idle_ms = tonumber(ARGV[6])
 
-if not min_idle_ms or not count or count < 1 or not enqueued_at then
+if not min_idle_ms or not count or count < 1 or not enqueued_at
+    or not gc_idle_ms then
     return reply_error("Invalid arguments")
 end
 
 local total_reclaimed = 0
 local total_dropped = 0
 
-for i = 6, #ARGV do
+for i = 7, #ARGV do
     local queue = ARGV[i]
     local hk = hash_key(namespace, queue)
     local sk = stream_key(namespace, queue)
@@ -386,6 +388,35 @@ for i = 6, #ARGV do
             break
         end
         cursor = next_cursor
+    end
+
+    -- Consumer metadata hygiene: instances come and go, and Redis never GCs
+    -- consumer group members. Drop consumers whose PEL is empty and whose
+    -- idle time exceeds gc_idle_ms. Pending entries make a consumer
+    -- untouchable: DELCONSUMER destroys the PEL and silently orphans those
+    -- messages past any claim. XINFO sits behind pcall so environments
+    -- without it (test doubles) degrade to a no-op sweep.
+    local consumers = redis.pcall("XINFO", "CONSUMERS", sk, namespace)
+    if type(consumers) == "table" and not consumers.err then
+        for _, item in ipairs(consumers) do
+            local name, pending, idle
+            if type(item) == "table" then
+                for j = 1, #item, 2 do
+                    local field = item[j]
+                    if field == "name" then
+                        name = item[j + 1]
+                    elseif field == "pending" then
+                        pending = tonumber(item[j + 1])
+                    elseif field == "idle" then
+                        idle = tonumber(item[j + 1])
+                    end
+                end
+            end
+
+            if name and pending == 0 and idle and idle > gc_idle_ms then
+                redis.call("XGROUP", "DELCONSUMER", sk, namespace, name)
+            end
+        end
     end
 end
 

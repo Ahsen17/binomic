@@ -25,9 +25,9 @@ HEARTBEAT_INTERVAL: float = 1.0
 # SIGKILL and costs the full terminate timeout before the restart begins.
 RESTART_TIMEOUT: float = 40.0
 
-# The master mints consumer names with a hostname prefix so instances of
-# the same app sharing one Redis never collide in the consumer group.
-CONSUMER_0: str = f"{gethostname()}-consumer-0"
+# The master mints consumer names with hostname + pid prefixes so instances
+# of the same app sharing one Redis never collide in the consumer group.
+CONSUMER_0: str = f"{gethostname()}-{os.getpid()}-consumer-0"
 
 
 @pytest.mark.integration

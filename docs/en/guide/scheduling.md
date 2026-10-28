@@ -87,6 +87,15 @@ automatically by the client at startup (see the next section). Which stream a
 message lands in is decided by the **queue in the task declaration**; `submit`
 does not take a caller-specified queue.
 
+```{note}
+A `delay` submission lives in the client process's in-memory scheduler and is
+**not durable**: it is lost when the process exits, and on-time delivery
+presupposes the client process staying alive until the delay elapses. Delayed
+delivery that survives restarts is outside the framework's promise; if you
+need it, provide it yourself (e.g. persist the intent and re-submit on
+startup).
+```
+
 ```python
 from binomic.broker import Message
 

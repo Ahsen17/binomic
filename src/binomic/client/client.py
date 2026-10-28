@@ -190,6 +190,14 @@ class Binomic(AsyncContextManagerMixin):
             await self._deliver(queue, message, capture_context())
 
     async def submit(self, message: "Message") -> None:
+        """Submit a message for delivery according to its task's mode.
+
+        ``direct`` enqueues immediately; ``delay`` schedules the enqueue on
+        the client process's in-memory scheduler, so success only means
+        *scheduled* and the job is lost if the process exits before the delay
+        elapses. ``cron`` and ``interval`` tasks are periodic and reject
+        ``submit``.
+        """
 
         spec = self._registry.get(message.task)
 

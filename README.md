@@ -184,8 +184,10 @@ flowchart TD
   `binomic.worker.heartbeat.age` gauge 与 `binomic.worker.restarts` counter
   （带 `binomic.worker.reason` 属性）由客户端进程内的监督循环发射，告警与审计
   两用；正常停机不计入重启
-- [ ] **P0 · 延时作业持久化** —— `delay` 模式的提交仍依赖客户端进程内存中的调度器，
-  进程退出即丢；需要将延时作业落盘（Redis 侧排队）
+- [x] **P0 · 延时作业持久化** —— 已裁决：**不做**。`delay` 保留为进程内延时糖，
+  语义为**非持久**（提交驻留在客户端进程内存的调度器中，进程退出即丢，边界见
+  [调度文档](docs/guide/scheduling.md)）；跨重启的延时投递在出现真实使用场景前不建设，
+  届时按 Redis 侧排队立项
 - [x] **P0 · 存储有界** —— ack/dead/reclaim 对终态条目做 `XDEL` 清理；radix 树节点在
   整节点删空后即释放，主队列实为滑动窗口、不随历史增长（已实测验证）。DLQ 有意不自动
   清理（审计/重放面），保留策略如需再另行迭代

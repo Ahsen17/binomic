@@ -216,9 +216,12 @@ checked box means done. For what has landed, see
   `binomic.worker.restarts` counter (with the `binomic.worker.reason`
   attribute), emitted by the supervision loop in the client process for both
   alerting and audit; orderly shutdown is not counted as restarts
-- [ ] **P0 · Persisted delayed jobs** -- `delay`-mode submissions still depend
-  on the scheduler living in the client process's memory and are lost on exit;
-  they need to be persisted (queued on the Redis side)
+- [x] **P0 · Persisted delayed jobs** -- adjudicated: **not built**. `delay`
+  stays as an in-process convenience with **non-durable** semantics
+  (submissions live in the client process's in-memory scheduler and are lost
+  on exit; see the [scheduling guide](docs/guide/scheduling.md)); delayed
+  delivery that survives restarts will only be built once a real use case
+  shows up, as Redis-side queueing
 - [x] **P0 · Bounded storage** -- ack/dead/reclaim `XDEL` terminal entries;
   radix-tree nodes are released once fully deleted, so live queues are a
   sliding window that does not grow with history (verified empirically). The

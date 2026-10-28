@@ -33,7 +33,7 @@ config = BinomicConfig(
 **不**受该开关控制，始终按配置输出。
 
 启用了却未安装 extra 时，构造 `Binomic` 会立即抛出带安装提示的 `RuntimeError`
-（fail-fast），不会静默降级。
+（fail-fast），不会静默降级；standalone `Master` 在构造时同样校验。
 
 ### Litestar
 
@@ -143,6 +143,8 @@ Span 名与属性遵循 OpenTelemetry messaging 语义约定的形状：
 | `binomic.task.dead_letters` | Counter | `{task}` | 进 DLQ 次数（带 `reason`） |
 | `binomic.task.reclaims` | Counter | `{task}` | reclaim 回收条数 |
 | `binomic.worker.inflight.tasks` | UpDownCounter | `{task}` | 在途任务数（按进程） |
+| `binomic.worker.restarts` | Counter | `{worker}` | visor 判死重启次数（属性 `binomic.worker.reason`：`heartbeat` = 进程活着但心跳停滞、`dead` = 进程死亡） |
+| `binomic.worker.heartbeat.age` | ObservableGauge | `s` | 每个 worker 的心跳年龄（从未起跳呈极大值） |
 | `binomic.queue.depth` | ObservableGauge | `{message}` | stream 长度（含未确认） |
 | `binomic.queue.oldest_pending.age` | ObservableGauge | `s` | 最老 entry 的年龄 |
 
@@ -152,6 +154,24 @@ Span 名与属性遵循 OpenTelemetry messaging 语义约定的形状：
 
 直方图的显式桶由调用方的 View 配置决定，Binomic 不强制；可直接使用 OTel
 semconv 的秒级标准桶集合。
+
+### 监督（Master）
+
+监督指标由 **Master**（客户端进程内的监督循环）发射，走客户端进程的 provider，
+与 `worker_init` 无关：
+
+- `binomic.worker.restarts` 在 visor 判死重启时 +1；`close()` 的正常停机不计入，
+  告警侧无需排除停机窗口。`close()` 亦不清理心跳 cells——客户端形态下进程随即
+  退出；standalone 进程若在 `close()` 后继续存活，age 会无界增长且不再产生
+  重启计数；
+- `binomic.worker.heartbeat.age` 按 worker 报告「当前时刻 − 最后心跳」。从未起跳
+  的 worker 呈现为极大年龄——语义如此：从未起跳即最陈旧，阈值告警自然覆盖慢启动；
+- 重启计数与心跳年龄即告警两要素：「重启率突增」看 counter，「有 worker 失联」
+  看 age 超阈值；「谁、何时、为何」由指标属性关联 structlog 的 `Worker restarted`
+  日志回答。
+
+心跳年龄 gauge 是**进程级全局注册**，同名 gauge 首次注册生效——一个进程运行一个
+Master（客户端内建的形态）即语义正确。
 
 ## Logs
 

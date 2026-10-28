@@ -3,12 +3,13 @@ import time
 from collections.abc import Callable
 from multiprocessing import Process, get_context
 from socket import gethostname
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import anyio
 import pytest
 from pytest_mock import MockerFixture
 
+from binomic.otel import telemetry
 from binomic.worker import (
     Master,
     MasterPolicy,
@@ -17,6 +18,9 @@ from binomic.worker import (
 )
 from binomic.worker.master import TERMINATE_TIMEOUT
 
+if TYPE_CHECKING:
+    from multiprocessing.sharedctypes import Synchronized
+
 # A supervision loop that iterates quickly; the default is ten seconds a tick.
 BUSY_POLICY = MasterPolicy(
     workers=1,
@@ -24,7 +28,27 @@ BUSY_POLICY = MasterPolicy(
         queues=["default"], concurrency=2, heartbeat_interval=0.01
     ),
 )
+
+# The otel-enabled variant, for the supervision telemetry cases.
+BUSY_OTEL_POLICY = MasterPolicy(
+    workers=1,
+    worker_policy=WorkerPolicy(
+        queues=["default"], concurrency=2, heartbeat_interval=0.01, otel_enabled=True
+    ),
+)
 LOOP_BUDGET: float = 2.0
+
+
+def metric_points(metrics_data: Any, name: str) -> list[Any]:
+
+    return [
+        point
+        for resource in metrics_data.resource_metrics
+        for scope in resource.scope_metrics
+        for metric in scope.metrics
+        if metric.name == name
+        for point in metric.data.data_points
+    ]
 
 
 @pytest.fixture
@@ -329,3 +353,160 @@ class TestMasterVisor:
         stopped.assert_not_called()
         restarted.assert_not_called()
         assert master._subprocesses["worker-0"] is alive
+
+
+class TestMasterTelemetry:
+    """The supervision surface as OTel metrics: restarts counter + age gauge."""
+
+    def test_disabled_builds_no_instruments(
+        self, make_master: Callable[..., Master]
+    ) -> None:
+
+        master = make_master()
+
+        assert master._restarts is None
+
+    def test_enabled_requires_the_extra(
+        self,
+        make_master: Callable[..., Master],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+
+        monkeypatch.setattr(telemetry, "AVAILABLE", False)
+
+        with pytest.raises(RuntimeError, match=r"binomic\[otel\]"):
+            make_master(policy=BUSY_OTEL_POLICY)
+
+    async def test_a_stale_worker_counts_a_heartbeat_restart(
+        self,
+        make_master: Callable[..., Master],
+        mocker: MockerFixture,
+        otel_sdk: Any,
+    ) -> None:
+
+        _, metric_reader = otel_sdk
+        master = make_master(policy=BUSY_OTEL_POLICY)
+        silent = mocker.Mock(spec=Process)
+        silent.is_alive.return_value = True
+        master._subprocesses = {"consumer-stale": silent}
+
+        presence = mocker.Mock(spec=MasterPresence)
+        presence.presence.return_value = {"consumer-stale": time.time() - 100}
+        master._presence = presence
+        replacement = mocker.Mock(spec=Process)
+
+        def fake_run(consumer: str) -> None:
+            master._subprocesses[consumer] = replacement
+            scope.cancel()
+
+        with anyio.move_on_after(LOOP_BUDGET) as scope:
+            mocker.patch.object(master, "_run_proc", side_effect=fake_run)
+            await master._visor()
+
+        metrics_data = metric_reader.get_metrics_data()
+        assert metrics_data is not None
+
+        (point,) = [
+            point
+            for point in metric_points(metrics_data, "binomic.worker.restarts")
+            if point.attributes["binomic.worker.consumer"] == "consumer-stale"
+        ]
+
+        assert point.value == 1
+        assert point.attributes["binomic.worker.reason"] == "heartbeat"
+
+    async def test_a_dead_worker_counts_a_dead_restart(
+        self,
+        make_master: Callable[..., Master],
+        mocker: MockerFixture,
+        otel_sdk: Any,
+    ) -> None:
+
+        _, metric_reader = otel_sdk
+        master = make_master(policy=BUSY_OTEL_POLICY)
+        dead = mocker.Mock(spec=Process)
+        dead.is_alive.return_value = False
+        master._subprocesses = {"consumer-dead": dead}
+
+        presence = mocker.Mock(spec=MasterPresence)
+        # A beat taken at setup can age past the stalled threshold on a loaded
+        # CI; a fresh beat on every check pins the reason to the dead arm.
+        presence.presence.side_effect = lambda: {"consumer-dead": time.time()}
+        master._presence = presence
+        replacement = mocker.Mock(spec=Process)
+
+        def fake_run(consumer: str) -> None:
+            master._subprocesses[consumer] = replacement
+            scope.cancel()
+
+        with anyio.move_on_after(LOOP_BUDGET) as scope:
+            mocker.patch.object(master, "_run_proc", side_effect=fake_run)
+            await master._visor()
+
+        metrics_data = metric_reader.get_metrics_data()
+        assert metrics_data is not None
+
+        (point,) = [
+            point
+            for point in metric_points(metrics_data, "binomic.worker.restarts")
+            if point.attributes["binomic.worker.consumer"] == "consumer-dead"
+        ]
+
+        assert point.value == 1
+        assert point.attributes["binomic.worker.reason"] == "dead"
+
+    async def test_close_terminations_are_not_restarts(
+        self,
+        make_master: Callable[..., Master],
+        mocker: MockerFixture,
+        otel_sdk: Any,
+    ) -> None:
+
+        _, metric_reader = otel_sdk
+        master = make_master(policy=BUSY_OTEL_POLICY)
+        worker = mocker.Mock(spec=Process)
+        worker.is_alive.return_value = True
+        master._subprocesses = {"consumer-close": worker}
+
+        await master.close()
+
+        metrics_data = metric_reader.get_metrics_data()
+        assert metrics_data is not None
+
+        assert not [
+            point
+            for point in metric_points(metrics_data, "binomic.worker.restarts")
+            if point.attributes["binomic.worker.consumer"] == "consumer-close"
+        ]
+
+    def test_the_age_gauge_reports_per_consumer(
+        self,
+        make_master: Callable[..., Master],
+        make_heartbeat: Callable[[], "Synchronized[float]"],
+        mocker: MockerFixture,
+    ) -> None:
+
+        # An observable gauge is a process-global and the first registration
+        # of its name wins, so the wiring and the callback are asserted
+        # directly instead of through the shared session meter provider.
+        registered: list[dict[str, Any]] = []
+        mocker.patch(
+            "binomic.worker.master.create_observable_gauge",
+            side_effect=lambda **kwargs: registered.append(kwargs),
+        )
+
+        master = make_master(policy=BUSY_OTEL_POLICY)
+
+        assert registered != []
+        assert registered[0]["name"] == "binomic.worker.heartbeat.age"
+        assert registered[0]["unit"] == "s"
+
+        cell = make_heartbeat()
+        cell.value = time.time() - 10.0
+        master._presence.watch("consumer-age", cell)
+
+        ((age, attributes),) = registered[0]["observe"]()
+
+        assert attributes == {"binomic.worker.consumer": "consumer-age"}
+        # The cell was set ten seconds ago; the age reads through the clock.
+        assert 10.0 <= age < 60.0

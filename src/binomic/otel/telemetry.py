@@ -29,6 +29,7 @@ __all__ = (
     "MESSAGING_SYSTEM",
     "MESSAGING_SYSTEM_VALUE",
     "QUEUE_NAME",
+    "RESTART_REASON",
     "TASK_ATTEMPT",
     "TASK_NAME",
     "WORKER_CONSUMER",
@@ -61,6 +62,7 @@ TASK_ATTEMPT: Final = "binomic.task.attempt"
 QUEUE_NAME: Final = "binomic.queue.name"
 WORKER_CONSUMER: Final = "binomic.worker.consumer"
 DEAD_REASON: Final = "binomic.dead.reason"
+RESTART_REASON: Final = "binomic.worker.reason"
 
 # The W3C Trace Context fields persisted for delivery.
 _TRACE_KEYS: Final[tuple[str, ...]] = ("traceparent", "tracestate", "baggage")

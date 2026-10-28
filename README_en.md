@@ -211,6 +211,11 @@ The list below tracks the known gaps and the planned iteration order; a
 checked box means done. For what has landed, see
 [CHANGELOG.md](CHANGELOG.md).
 
+- [x] **P0 · OTel-instrumented supervision** -- the Master's supervision surface
+  is now on `binomic[otel]`: a `binomic.worker.heartbeat.age` gauge and a
+  `binomic.worker.restarts` counter (with the `binomic.worker.reason`
+  attribute), emitted by the supervision loop in the client process for both
+  alerting and audit; orderly shutdown is not counted as restarts
 - [ ] **P0 · Persisted delayed jobs** -- `delay`-mode submissions still depend
   on the scheduler living in the client process's memory and are lost on exit;
   they need to be persisted (queued on the Redis side)
@@ -219,12 +224,21 @@ checked box means done. For what has landed, see
   sliding window that does not grow with history (verified empirically). The
   DLQ is deliberately never auto-pruned (audit/replay surface); iterate on a
   retention policy only if it is ever needed
+- [ ] **P1 · DLQ operations tooling** -- standardized entry points for replay,
+  inspection and retention policy; the data plane is in place (the DLQ is
+  deliberately never auto-pruned), the management plane is missing
 - [x] **P1 · Configuration** -- `task_timeout` / `heartbeat_interval` /
   `reclaim_interval` / `read_count` / `poll_interval` are now `BinomicConfig`
   fields, mapped into the `WorkerPolicy` on context entry
 - [x] **P1 · Dead-letter queue** -- timed-out, stale and exhausted messages
   land in the DLQ (`{namespace}:{queue}:dlq:stream` + `:dlq:hash`), inspectable
   and replayable
+- [ ] **P2 · Redis HA compatibility** -- verify that the six Lua scripts and
+  consumer-group semantics hold under Sentinel/Cluster topologies
+- [ ] **P2 · Producer-side rate limiting** -- per-queue rate/capacity limits;
+  consumer-side backpressure already exists
+- [ ] **P2 · Large-scale stability testing** -- soak tests across multiple
+  instances, Redis flaps and network partitions
 - [x] **P2 · Multi-instance** -- consumer names carry hostname + master-pid
   prefixes, so instances never collide on the same host or across hosts, and
   reclaim sweeps away dead empty-PEL consumers, so several client instances can

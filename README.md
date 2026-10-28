@@ -180,16 +180,26 @@ flowchart TD
 以下是当前已知缺口与迭代规划，按优先级排列，勾选即完成；已落地的能力以
 [CHANGELOG.md](CHANGELOG.md) 为准。
 
+- [x] **P0 · 进程监督 OTel 化** —— Master 监督面已接入 `binomic[otel]`：
+  `binomic.worker.heartbeat.age` gauge 与 `binomic.worker.restarts` counter
+  （带 `binomic.worker.reason` 属性）由客户端进程内的监督循环发射，告警与审计
+  两用；正常停机不计入重启
 - [ ] **P0 · 延时作业持久化** —— `delay` 模式的提交仍依赖客户端进程内存中的调度器，
   进程退出即丢；需要将延时作业落盘（Redis 侧排队）
 - [x] **P0 · 存储有界** —— ack/dead/reclaim 对终态条目做 `XDEL` 清理；radix 树节点在
   整节点删空后即释放，主队列实为滑动窗口、不随历史增长（已实测验证）。DLQ 有意不自动
   清理（审计/重放面），保留策略如需再另行迭代
+- [ ] **P1 · DLQ 运维工具链** —— 回放、检查与保留策略的标准化入口；数据面已备
+  （DLQ 有意不自动清理），缺管理面
 - [x] **P1 · 配置开放** —— `task_timeout` / `heartbeat_interval` /
   `reclaim_interval` / `read_count` / `poll_interval` 已提升为 `BinomicConfig` 字段，
   进 context 时映射进 `WorkerPolicy`
 - [x] **P1 · 死信队列** —— 超时、超龄与超出 `max_attempts` 的消息进入 DLQ
   （`{namespace}:{queue}:dlq:stream` + `:dlq:hash`），可检查、可重放
+- [ ] **P2 · Redis HA 兼容验证** —— Sentinel/Cluster 拓扑下六个 Lua 脚本与
+  consumer group 语义的兼容性验证
+- [ ] **P2 · 投递侧限流** —— 队列级速率/容量上限；消费侧背压已具备
+- [ ] **P2 · 大规模稳定性验证** —— 多实例、Redis 抖动与网络分区下的长稳测试
 - [x] **P2 · 多实例** —— consumer 名带 hostname + Master pid 前缀（同主机与跨主机
   实例均不撞名）+ reclaim 顺带清扫空 PEL 的死 consumer，支持同一 Redis 库上并存多个
   客户端实例

@@ -36,7 +36,8 @@ build without observability. structlog logging is **not** governed by this
 switch and always flows as configured.
 
 Enabling it without the extra installed raises an instructive `RuntimeError`
-when `Binomic` is constructed (fail-fast) instead of silently degrading.
+when `Binomic` is constructed (fail-fast) instead of silently degrading; a
+standalone `Master` is validated at construction the same way.
 
 ### Litestar
 
@@ -160,6 +161,8 @@ All instruments live under the `binomic.` namespace and use UCUM units:
 | `binomic.task.dead_letters` | Counter | `{task}` | DLQ transfers (with `reason`) |
 | `binomic.task.reclaims` | Counter | `{task}` | Reclaimed messages |
 | `binomic.worker.inflight.tasks` | UpDownCounter | `{task}` | In-flight tasks (per process) |
+| `binomic.worker.restarts` | Counter | `{worker}` | Visor-initiated restarts (`binomic.worker.reason`: `heartbeat` = alive but stalled, `dead` = process gone) |
+| `binomic.worker.heartbeat.age` | ObservableGauge | `s` | Heartbeat age per worker (never-beaten reads as enormous) |
 | `binomic.queue.depth` | ObservableGauge | `{message}` | Stream length (pending included) |
 | `binomic.queue.oldest_pending.age` | ObservableGauge | `s` | Age of the oldest entry |
 
@@ -170,6 +173,31 @@ delay), not the delay of one individual delivery.
 
 Explicit histogram buckets are configured by your own View; Binomic does not
 impose them. The OTel semconv second-scale bucket set works well as a default.
+
+### Supervision (Master)
+
+Supervision instruments are emitted by the **Master** — the supervision loop
+inside the client process — through the client process's provider; `worker_init`
+plays no part:
+
+- `binomic.worker.restarts` increments when the visor decides a worker is dead
+  or stalled; `close()`'s orderly shutdown is not counted, so alert rules need
+  no shutdown-window exclusion. `close()` does not clear heartbeat cells — in
+  the client shape the process exits right away; a standalone process that
+  keeps living past `close()` sees unbounded ages and no further restart
+  counts;
+- `binomic.worker.heartbeat.age` reports "now − last beat" per worker. A worker
+  that has not beaten yet reads as an enormous age — that is the semantics:
+  never beaten is as stale as it gets, and threshold alerts naturally cover
+  slow starts;
+- the restart counter and the age gauge are the two alerting primitives: a
+  restart-rate spike on the counter, a worker gone silent on the age threshold;
+  "who, when and why" is answered by correlating the attributes with the
+  structlog `Worker restarted` log.
+
+The heartbeat-age gauge is a **process-global registration** and the first
+registration of its name wins — one Master per process (the shape the client
+builds) is exactly right.
 
 ## Logs
 

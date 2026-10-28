@@ -39,7 +39,7 @@ class MasterPresence:
         holding it, which would wedge the visor for good.
         """
 
-        return {ident: cell.get_obj().value for ident, cell in self._cells.items()}
+        return {ident: cell.get_obj().value for ident, cell in dict(self._cells).items()}
 
 
 class SubprocessPresence:

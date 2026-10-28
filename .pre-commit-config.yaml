@@ -2,12 +2,12 @@ default_language_version:
   python: "3"
 repos:
   - repo: https://github.com/compilerla/conventional-pre-commit
-    rev: v4.2.0
+    rev: v4.4.0
     hooks:
       - id: conventional-pre-commit
         stages: [commit-msg]
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v6.0.0
     hooks:
       - id: check-ast
       - id: check-case-conflict
@@ -16,12 +16,12 @@ repos:
       - id: mixed-line-ending
       - id: trailing-whitespace
   - repo: https://github.com/provinzkraut/unasyncd
-    rev: "v0.8.1"
+    rev: "v0.10.1"
     hooks:
       - id: unasyncd
         additional_dependencies: ["ruff"]
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: "v0.17.0"
+    rev: "v0.17.3"
     hooks:
       - id: ruff
         args: ["--fix"]
@@ -29,6 +29,6 @@ repos:
       - id: ruff-format
         types_or: [python, pyi]
   - repo: https://github.com/sphinx-contrib/sphinx-lint
-    rev: "v1.0.0"
+    rev: "v1.0.2"
     hooks:
       - id: sphinx-lint

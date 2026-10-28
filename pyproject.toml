@@ -236,7 +236,6 @@ disallow_subclassing_any = false
 addopts = ["--import-mode=importlib", "--asyncio-mode=auto"]
 pythonpath = ["."]
 markers = [
-  "pg: integration tests that require a real PostgreSQL (set DAB_TEST_PG_DSN to enable)",
   "integration: end-to-end tests that drive the real assembly pipeline in subprocesses",
 ]
 filterwarnings = [

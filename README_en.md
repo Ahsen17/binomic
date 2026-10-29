@@ -241,9 +241,6 @@ checked box means done. For what has landed, see
   and replayable
 - [ ] **P2 · Redis HA compatibility** -- verify that the six Lua scripts and
   consumer-group semantics hold under Sentinel/Cluster topologies
-- [ ] **P2 · Producer-side rate limiting** -- a cap on submissions per unit
-  of time; the volume dimension is already covered by the producer-side
-  capacity limit below, and the rate mechanism is left to its own task
 - [ ] **P2 · Large-scale stability testing** -- soak tests across multiple
   instances, Redis flaps and network partitions
 - [x] **P2 · Producer-side capacity limit** -- `BinomicConfig.capacity` caps
@@ -252,6 +249,11 @@ checked box means done. For what has landed, see
   scheduled paths log, count the rejection and drop the round; the check is
   atomic with the enqueue in one script, and retry/reclaim keep the depth
   constant so they never consume capacity. See the reliability guide
+- [x] **P2 · Producer-side rate limiting** -- adjudicated as not built: the
+  delivery rate is orthogonal to the two existing dimensions, `capacity`
+  (inventory) and `concurrency` (execution concurrency); the gap is real but
+  no scenario drives it, and the control surface gains no rate dimension. See
+  the [technical debt page](docs/en/guide/tech-debt.md)
 - [x] **P2 · Multi-instance** -- consumer names carry hostname + master-pid
   prefixes, so instances never collide on the same host or across hosts, and
   reclaim sweeps away dead empty-PEL consumers, so several client instances can

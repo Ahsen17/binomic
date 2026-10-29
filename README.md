@@ -202,13 +202,14 @@ flowchart TD
   （`{namespace}:{queue}:dlq:stream` + `:dlq:hash`），可检查、可重放
 - [ ] **P2 · Redis HA 兼容验证** —— Sentinel/Cluster 拓扑下六个 Lua 脚本与
   consumer group 语义的兼容性验证
-- [ ] **P2 · 投递侧速率上限** —— 单位时间投递数上限；容量维度已由
-  「投递侧容量上限」覆盖，速率机制另立任务调研
 - [ ] **P2 · 大规模稳定性验证** —— 多实例、Redis 抖动与网络分区下的长稳测试
 - [x] **P2 · 投递侧容量上限** —— `BinomicConfig.capacity` 为所有队列的未确认总数
   （stream 长度）设置统一上限，达到上限的新提交立即拒绝：`direct` 路径抛
   `QueueCapacityError`，调度路径记录日志与拒绝计数后放弃本轮；检查与入队同脚本
   原子完成，retry/reclaim 前后深度不变、不占额度。详见可靠性指南
+- [x] **P2 · 投递侧速率上限** —— 裁决不做：投递速率与 `capacity`（存量上限）、
+  `concurrency`（执行并发度）两维正交，缺口真实但无场景驱动，控制面不引入
+  速率维；决策记录见[技术债务](docs/guide/tech-debt.md)
 - [x] **P2 · 多实例** —— consumer 名带 hostname + Master pid 前缀（同主机与跨主机
   实例均不撞名）+ reclaim 顺带清扫空 PEL 的已消失 consumer，支持同一 Redis 库上并存多个
   客户端实例

@@ -43,5 +43,6 @@ guide/scheduling
 guide/reliability
 guide/observability
 guide/litestar
+guide/tech-debt
 api
 ```

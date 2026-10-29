@@ -155,6 +155,7 @@ All instruments live under the `binomic.` namespace and use UCUM units:
 | `binomic.task.execution.duration` | Histogram | `s` | Wall-clock task function duration |
 | `binomic.task.delivery.lag` | Histogram | `s` | Total delivery delay: execution start − `enqueued_at` |
 | `binomic.task.submissions` | Counter | `{task}` | Submission attempts (silent enqueue degradation is not a failure) |
+| `binomic.task.rejections` | Counter | `{task}` | Capacity rejections (attributes `binomic.task.name` and `messaging.destination.name`; gated by `otel_enabled`) |
 | `binomic.task.executions` | Counter | `{task}` | Executions, retries included |
 | `binomic.task.acks` | Counter | `{task}` | Acks |
 | `binomic.task.retries` | Counter | `{task}` | Backoff redeliveries |

@@ -9,7 +9,7 @@ from typing import Any, cast
 import pytest
 from pytest_mock import MockerFixture
 
-from binomic.broker import Message, MessageEntry, RedisBroker
+from binomic.broker import Message, MessageEntry, QueueCapacityError, RedisBroker
 from binomic.broker.redis.broker import SCRIPTS
 from binomic.broker.redis.schemas import ScriptResponse
 from binomic.broker.redis.scripts import _COMMON
@@ -531,11 +531,31 @@ class TestInvokeScript:
         class FakeScript:
             async def __call__(self, client: Any, keys: Any, args: Any) -> str:
 
-                return ScriptResponse(ok=True, result=7).to_json()
+                return ScriptResponse(status="ok", result=7).to_json()
 
         mocker.patch.object(broker, "_scripts", {"enqueue": FakeScript()})
 
         assert await broker._invoke_script("enqueue", keys=[], args=[]) == 7
+
+    async def test_rejected_envelope_raises_queue_capacity_error(
+        self, broker: RedisBroker, mocker: MockerFixture
+    ) -> None:
+
+        class FakeScript:
+            async def __call__(self, client: Any, keys: Any, args: Any) -> str:
+
+                return ScriptResponse(
+                    status="rejected",
+                    result={"current": 3, "capacity": 3},
+                ).to_json()
+
+        mocker.patch.object(broker, "_scripts", {"enqueue": FakeScript()})
+
+        with pytest.raises(QueueCapacityError) as excinfo:
+            await broker._invoke_script("enqueue", keys=[], args=[])
+
+        assert excinfo.value.current == 3
+        assert excinfo.value.capacity == 3
 
     async def test_error_envelope_degrades_and_logs(
         self,
@@ -547,7 +567,7 @@ class TestInvokeScript:
         class FakeScript:
             async def __call__(self, client: Any, keys: Any, args: Any) -> str:
 
-                return ScriptResponse(ok=False, error="boom").to_json()
+                return ScriptResponse(status="error", error="boom").to_json()
 
         mocker.patch.object(broker, "_scripts", {"enqueue": FakeScript()})
 
@@ -557,6 +577,116 @@ class TestInvokeScript:
         assert any(
             "Failed to invoke script" in record.getMessage() for record in caplog.records
         )
+
+
+class TestCapacity:
+    """The capacity check counts the stream length: entries stay in the
+    stream from enqueue until ack/dead/retry/reclaim removes them, so the
+    depth covers both undelivered and in-flight messages."""
+
+    def test_rejects_negative_capacity_at_construction(self) -> None:
+
+        with pytest.raises(ValueError, match="capacity"):
+            RedisBroker(
+                dsn="redis://localhost:6379/0",
+                queues=["default"],
+                namespace="binomic",
+                capacity=-1,
+            )
+
+    async def test_unlimited_by_default(
+        self, broker: RedisBroker, make_message: Callable[..., Message]
+    ) -> None:
+
+        for _ in range(3):
+            assert await broker.enqueue("default", make_message()) is not None
+
+    async def test_rejects_when_depth_reaches_capacity(
+        self,
+        make_broker: Callable[..., RedisBroker],
+        make_message: Callable[..., Message],
+    ) -> None:
+
+        broker = make_broker(["default"], capacity=2)
+        await broker.start()
+
+        assert await broker.enqueue("default", make_message()) is not None
+        assert await broker.enqueue("default", make_message()) is not None
+
+        with pytest.raises(QueueCapacityError) as excinfo:
+            await broker.enqueue("default", make_message())
+
+        assert excinfo.value.current == 2
+        assert excinfo.value.capacity == 2
+        # The rejected call wrote nothing.
+        assert len(await stored_entry_ids(broker)) == 2
+
+    async def test_zero_capacity_rejects_everything(
+        self,
+        make_broker: Callable[..., RedisBroker],
+        make_message: Callable[..., Message],
+    ) -> None:
+
+        broker = make_broker(["default"], capacity=0)
+        await broker.start()
+
+        with pytest.raises(QueueCapacityError) as excinfo:
+            await broker.enqueue("default", make_message())
+
+        assert excinfo.value.current == 0
+        assert excinfo.value.capacity == 0
+
+    async def test_inflight_messages_count_toward_capacity(
+        self,
+        make_broker: Callable[..., RedisBroker],
+        make_message: Callable[..., Message],
+        deliver_entry: Deliver,
+    ) -> None:
+
+        broker = make_broker(["default"], capacity=1)
+        await broker.start()
+
+        await broker.enqueue("default", make_message())
+        await deliver_entry(broker, "default", "consumer-1")
+
+        with pytest.raises(QueueCapacityError):
+            await broker.enqueue("default", make_message())
+
+    async def test_ack_frees_capacity(
+        self,
+        make_broker: Callable[..., RedisBroker],
+        make_message: Callable[..., Message],
+        deliver_entry: Deliver,
+    ) -> None:
+
+        broker = make_broker(["default"], capacity=1)
+        await broker.start()
+
+        await broker.enqueue("default", make_message())
+        entry = await deliver_entry(broker, "default", "consumer-1")
+        await broker.ack(entry)
+
+        assert await broker.enqueue("default", make_message()) is not None
+
+    async def test_retry_keeps_depth_so_recovery_never_consumes_capacity(
+        self,
+        make_broker: Callable[..., RedisBroker],
+        make_message: Callable[..., Message],
+        deliver_entry: Deliver,
+    ) -> None:
+
+        broker = make_broker(["default"], capacity=1)
+        await broker.start()
+
+        await broker.enqueue("default", make_message())
+        entry = await deliver_entry(broker, "default", "consumer-1")
+
+        assert await broker.retry(entry) == 1
+        # The redelivered copy replaced the original: same depth.
+        assert len(await stored_entry_ids(broker)) == 1
+
+        with pytest.raises(QueueCapacityError):
+            await broker.enqueue("default", make_message())
 
 
 class TestTraceContext:

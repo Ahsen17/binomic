@@ -137,6 +137,7 @@ Span 名与属性遵循 OpenTelemetry messaging 语义约定的形状：
 | `binomic.task.execution.duration` | Histogram | `s` | 任务函数执行墙钟时长 |
 | `binomic.task.delivery.lag` | Histogram | `s` | 投递总滞留：执行开始 − `enqueued_at` |
 | `binomic.task.submissions` | Counter | `{task}` | 提交尝试次数（`enqueue` 的静默降级不计入失败） |
+| `binomic.task.rejections` | Counter | `{task}` | 容量拒绝次数（属性 `binomic.task.name` 与 `messaging.destination.name`；受 `otel_enabled` 门控） |
 | `binomic.task.executions` | Counter | `{task}` | 执行次数（含每次重投） |
 | `binomic.task.acks` | Counter | `{task}` | ack 次数 |
 | `binomic.task.retries` | Counter | `{task}` | 退避重投次数 |

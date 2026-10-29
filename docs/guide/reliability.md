@@ -31,6 +31,30 @@
 自行等待。
 ```
 
+## 容量上限
+
+`BinomicConfig.capacity` 为**所有队列**的未确认总数设置统一上限（`None` 表示
+不限流，为默认值；`0` 表示拒绝全部新提交）。未确认总数即队列 stream 的长度
+`XLEN`：消息自入队起留在 stream 中，直到 ack/dead/retry/reclaim 将其移除，因此
+**在途**（已被消费者取走、尚未确认）的消息同样计入。
+
+检查与入队在同一个 Lua 脚本内原子完成：深度达到上限时，本次 `enqueue` 不执行
+写入并返回拒绝，broker 将其抛为 `QueueCapacityError`（携带拒绝时的深度与上限）。
+两条提交路径的行为不同：
+
+- `direct`：`submit` 将 `QueueCapacityError` 原样抛给调用方，由调用方决定重试
+  或放弃；
+- `delay` / `cron` / `interval`：投递发生在调度作业内部、没有调用方通道，被拒时
+  记录 warning 日志、计数（`binomic.task.rejections`，受 `otel_enabled` 门控）并
+  放弃该次投递；周期任务下一轮自然重试，delay 任务该条消息即告丢失（与延迟任务
+  非持久的既定裁决一致）。
+
+retry 与 reclaim 的重入前后深度不变（同脚本内先加新、后删旧），因此系统恢复
+路径永远不占容量、也不会被容量拒绝。多实例共享同一 Redis 时，计数为全局合计。
+
+注意：请勿绕过 binomic 直接对 stream 执行 `XADD` / `XDEL` / `XTRIM`——前者绕过
+容量检查，后者直接释放或削减深度，使上限失去意义。
+
 ## 超时与超龄（直送 DLQ）
 
 `task_timeout` 在两处生效，语义都是「投递总时限」：

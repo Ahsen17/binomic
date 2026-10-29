@@ -16,12 +16,14 @@ class BrokerFactory:
         dsn: str,
         queues: list[str],
         namespace: str,
+        capacity: int | None = None,
         **config: Any,
     ) -> None:
 
         self._dsn = dsn
         self._queues = queues
         self._namespace = namespace
+        self._capacity = capacity
         self._config = config
 
     def create(self) -> "Broker":
@@ -32,6 +34,7 @@ class BrokerFactory:
                     dsn=self._dsn,
                     queues=self._queues,
                     namespace=self._namespace,
+                    capacity=self._capacity,
                     **self._config,
                 )
 

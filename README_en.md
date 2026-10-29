@@ -128,7 +128,10 @@ automatically when the client starts, and calling `submit` on them raises
 `ValueError`. The worker tuning knobs are `BinomicConfig` fields too:
 `task_timeout` / `read_count` / `poll_interval` / `heartbeat_interval` /
 `reclaim_interval` — see the [reliability guide](docs/en/guide/reliability.md).
-The telemetry switch `otel_enabled` and the subprocess hook `worker_init` are
+The producer-side capacity limit `capacity` (one cap for every queue's
+unacknowledged total, `None` unlimited by default) is one of its fields too;
+see the same guide. The telemetry switch `otel_enabled` and the subprocess
+hook `worker_init` are
 `BinomicConfig` fields too; see the
 [observability guide](docs/en/guide/observability.md). The Redis key prefix and consumer group name (`namespace`) are
 derived internally from `module_name` by both the client and the workers, so
@@ -238,10 +241,17 @@ checked box means done. For what has landed, see
   and replayable
 - [ ] **P2 · Redis HA compatibility** -- verify that the six Lua scripts and
   consumer-group semantics hold under Sentinel/Cluster topologies
-- [ ] **P2 · Producer-side rate limiting** -- per-queue rate/capacity limits;
-  consumer-side backpressure already exists
+- [ ] **P2 · Producer-side rate limiting** -- a cap on submissions per unit
+  of time; the volume dimension is already covered by the producer-side
+  capacity limit below, and the rate mechanism is left to its own task
 - [ ] **P2 · Large-scale stability testing** -- soak tests across multiple
   instances, Redis flaps and network partitions
+- [x] **P2 · Producer-side capacity limit** -- `BinomicConfig.capacity` caps
+  every queue's unacknowledged total (the stream length); submissions onto a
+  full queue are rejected immediately: `direct` raises `QueueCapacityError`,
+  scheduled paths log, count the rejection and drop the round; the check is
+  atomic with the enqueue in one script, and retry/reclaim keep the depth
+  constant so they never consume capacity. See the reliability guide
 - [x] **P2 · Multi-instance** -- consumer names carry hostname + master-pid
   prefixes, so instances never collide on the same host or across hosts, and
   reclaim sweeps away dead empty-PEL consumers, so several client instances can

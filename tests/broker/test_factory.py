@@ -26,6 +26,18 @@ class TestBrokerFactory:
         assert isinstance(broker, RedisBroker)
         assert broker._group == "ns"
 
+    def test_capacity_reaches_the_broker(self) -> None:
+
+        broker = BrokerFactory(
+            dsn="redis://localhost:6379/0",
+            queues=["default"],
+            namespace="binomic",
+            capacity=7,
+        ).create()
+
+        assert isinstance(broker, RedisBroker)
+        assert broker._capacity == 7
+
     def test_amqp_is_not_implemented(self) -> None:
 
         with pytest.raises(NotImplementedError, match="AMQP"):

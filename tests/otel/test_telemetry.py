@@ -1,4 +1,4 @@
-"""Telemetry gateway semantics: availability, propagation, error marking."""
+"""Telemetry wrapper semantics: availability, propagation, error marking."""
 
 from typing import Any
 
@@ -22,7 +22,7 @@ class TestAvailability:
         with pytest.raises(RuntimeError, match=r"binomic\[otel\]"):
             telemetry.ensure_available()
 
-    def test_gateways_degrade_without_the_extra(
+    def test_helpers_degrade_without_the_extra(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
 

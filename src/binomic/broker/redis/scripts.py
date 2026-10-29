@@ -1,7 +1,15 @@
 _REPLY_ABOUT = """\
 local function reply_ok(result)
     return cjson.encode({
-        ok = true,
+        status = "ok",
+        result = result,
+        error = cjson.null,
+    })
+end
+
+local function reply_reject(result)
+    return cjson.encode({
+        status = "rejected",
         result = result,
         error = cjson.null,
     })
@@ -9,7 +17,7 @@ end
 
 local function reply_error(error)
     return cjson.encode({
-        ok = false,
+        status = "error",
         result = cjson.null,
         error = error,
     })
@@ -48,6 +56,7 @@ local queue = ARGV[2]
 local message_json = ARGV[3]
 local enqueued_at = tonumber(ARGV[4])
 local context_json = ARGV[5]
+local capacity = ARGV[6]
 
 if not enqueued_at then
     return reply_error("Invalid `enqueued_at` value")
@@ -60,6 +69,24 @@ end
 
 local streamkey = stream_key(namespace, queue)
 local hk = hash_key(namespace, queue)
+
+-- Capacity check: the stream length IS the unacknowledged total — entries
+-- stay in the stream from XADD until ack/dead/retry/reclaim XDELs them, so
+-- acquired (in-flight) entries are counted exactly once here. An empty
+-- capacity means unlimited; zero rejects everything. The check runs in the
+-- same atomic script as the XADD, and retry/reclaim keep XLEN constant,
+-- so system recovery paths never consume capacity.
+if capacity and capacity ~= "" then
+    local limit = tonumber(capacity)
+    if not limit or limit < 0 then
+        return reply_error("Invalid `capacity` value")
+    end
+
+    local depth = redis.call("XLEN", streamkey)
+    if depth >= limit then
+        return reply_reject({{current = depth, capacity = limit}})
+    end
+end
 
 local res = redis.pcall("XADD", streamkey, "*", "id", tostring(message.id))
 if type(res) == "table" and res.err then

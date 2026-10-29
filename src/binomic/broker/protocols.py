@@ -18,7 +18,8 @@ class Broker(Protocol):
 
     Every operation is an atomic Lua script; script-level failures degrade to
     empty results instead of raising, so a broker hiccup cannot kill the
-    caller's loop.
+    caller's loop. The one expected outcome that is raised is a full queue:
+    ``enqueue`` raises ``QueueCapacityError`` instead of degrading.
     """
 
     async def enqueue(
@@ -33,6 +34,9 @@ class Broker(Protocol):
         framework fills from the ambient trace context; submitters leave it
         unset. Broker implementations treat it as an opaque string map and
         store it apart from the message envelope.
+
+        Raises ``QueueCapacityError`` when the queue's unacknowledged total
+        has reached the capacity configured for it.
         """
 
     async def acquire(

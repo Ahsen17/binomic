@@ -114,7 +114,9 @@ broker 在 enqueue 时盖戳（不是 `Message` 上的字段），无需手工�
 由客户端在内部按 `module_name` 派生，Worker 侧同样派生，两侧自动落在同一命名空间；
 它不是用户面参数。Worker 的调节旋钮同样是 `BinomicConfig` 字段：
 `task_timeout` / `read_count` / `poll_interval` / `heartbeat_interval` /
-`reclaim_interval`，语义见[可靠性指南](docs/guide/reliability.md)；可观测性开关
+`reclaim_interval`，语义见[可靠性指南](docs/guide/reliability.md)；投递侧容量上限
+`capacity`（所有队列未确认总数的统一上限，默认 `None` 不限流）也是它的字段，见同一
+指南；可观测性开关
 `otel_enabled` 与子进程初始化钩子 `worker_init` 同样是它的字段，见
 [可观测性指南](docs/guide/observability.md)。
 
@@ -200,10 +202,15 @@ flowchart TD
   （`{namespace}:{queue}:dlq:stream` + `:dlq:hash`），可检查、可重放
 - [ ] **P2 · Redis HA 兼容验证** —— Sentinel/Cluster 拓扑下六个 Lua 脚本与
   consumer group 语义的兼容性验证
-- [ ] **P2 · 投递侧限流** —— 队列级速率/容量上限；消费侧背压已具备
+- [ ] **P2 · 投递侧速率上限** —— 单位时间投递数上限；容量维度已由
+  「投递侧容量上限」覆盖，速率机制另立任务调研
 - [ ] **P2 · 大规模稳定性验证** —— 多实例、Redis 抖动与网络分区下的长稳测试
+- [x] **P2 · 投递侧容量上限** —— `BinomicConfig.capacity` 为所有队列的未确认总数
+  （stream 长度）设置统一上限，达到上限的新提交立即拒绝：`direct` 路径抛
+  `QueueCapacityError`，调度路径记录日志与拒绝计数后放弃本轮；检查与入队同脚本
+  原子完成，retry/reclaim 前后深度不变、不占额度。详见可靠性指南
 - [x] **P2 · 多实例** —— consumer 名带 hostname + Master pid 前缀（同主机与跨主机
-  实例均不撞名）+ reclaim 顺带清扫空 PEL 的死 consumer，支持同一 Redis 库上并存多个
+  实例均不撞名）+ reclaim 顺带清扫空 PEL 的已消失 consumer，支持同一 Redis 库上并存多个
   客户端实例
 - [x] **P2 · 可观测性** —— 统一 structlog 日志（提交、执行、重试/DLQ、监督与
   生命周期）；可选 `binomic[otel]` 提供 traces 与 metrics：producer/consumer span

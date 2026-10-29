@@ -12,7 +12,7 @@
 
 - 客户端首次投递：`attempt = 1`；
 - Worker 执行失败：`attempt` 由 broker 侧 Lua 脚本 +1，随后退避重投；
-- `reclaim` 回收宕机 worker 滞留的消息：`attempt` +1，且**重新盖戳**（见下文）。
+- `reclaim` 回收宕机 worker 滞留的消息：`attempt` +1，且**重新写入时间戳**（见下文）。
 
 ## 失败重试
 
@@ -105,25 +105,25 @@ async def charge() -> None: ...
 - **无返回值**：钩子是对既成事实的通知，不是控制流——返回值被忽略；从 DLQ 重放等
   后续处置由消费方自行承担；
 - 同步、异步函数皆可；
-- **永不影响投递语义**：钩子抛出的异常会被记录（warning）并吞掉，消费循环照常；
-  唯有取消（与退出信号）原样穿透；
-- **best-effort 解析**：钩子挂在任务声明上，随同一条 `autodiscover` 链路到达
+- **永不影响投递语义**：钩子抛出的异常会被记录（warning）并忽略，消费循环照常；
+  唯有取消（与退出信号）原样向上传播；
+- **best-effort 解析**：钩子随任务声明注册，经同一条 `autodiscover` 链路到达
   Worker；消息对应的任务名未注册时钩子被跳过，DLQ 写入不受影响；
-- **钩子必须快**：它运行在 `task_timeout` 之外、没有超时预算，挂死的钩子会占住一个
+- **钩子必须快**：它运行在 `task_timeout` 之外、没有超时预算，阻塞不返回的钩子会占住一个
   并发槽。
 
 类型别名 `OnDeadReason` 与 `OnDeadHook` 从 `binomic.task` 导出，可为钩子函数写注解。
 
 ## reclaim：宕机恢复
 
-worker 进程死亡（崩溃、被杀）时，其 PEL 里的消息无人 ack。其它消费者每
+worker 进程死亡（崩溃或被强制终止）时，其 PEL 里的消息无人 ack。其它消费者每
 `reclaim_interval` 跑一次 `XAUTOCLAIM`，把滞留超过 `min_idle_ms`（即 `task_timeout`
-的毫秒数，下限 10 秒）的消息重投给自己。与失败重投不同，reclaim 的副本**重新盖戳**：
+的毫秒数，下限 10 秒）的消息重投给自己。与失败重投不同，reclaim 的副本**重新写入时间戳**：
 worker 死亡属于「投递丢失」而非「任务失败」，副本获得完整的新时限窗口——否则滞留
-时间本身已超龄，回收将永远到货即死。`attempt` 照常 +1。
+时间本身已超龄，回收产生的副本会在投递时立即因超龄进入 DLQ。`attempt` 照常 +1。
 
 `XAUTOCLAIM` 之外，同一次脚本还会做一遍**消费者元数据清扫**：consumer 名带
-hostname + Master pid 前缀（同主机与跨主机实例均不撞名），实例扩缩容会在消费组里留下死 consumer；
+hostname + Master pid 前缀（同主机与跨主机实例均不撞名），实例扩缩容会在消费组里留下已消失的 consumer；
 **PEL 为空**且闲置超过 `gc_idle_ms`（由 policy 派生，下限为十个 `reclaim_interval`）
 的会被清除。PEL 非空的 consumer 绝不动——`DELCONSUMER` 会销毁其未 ack 条目，让
 那些消息永久滞留。

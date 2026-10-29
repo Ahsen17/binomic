@@ -60,7 +60,7 @@ factory = BinomicFactory(
 
 binomic: Binomic = factory.create()
 
-# 进入上下文后启动 Master（拉起 worker 子进程）并提供提交入口；
+# 进入上下文后启动 Master（创建 worker 子进程）并提供提交入口；
 # 构造时已自动发现 myapp 包内所有 tasks.py 模块并注册任务
 async with binomic:
     await binomic.submit(Message(task="example", args=[1]))
@@ -68,7 +68,7 @@ async with binomic:
 
 - `broker_dsn` 是**唯一**需要提供的 Redis 连接：消息投递与消费都走它指向的
   Redis Streams；Master 对 Worker 的存活监督走进程间 IPC，不需要 Redis；
-- `BinomicConfig` 中 `workers` 是 Master 拉起的 Worker 子进程数量，
+- `BinomicConfig` 中 `workers` 是 Master 创建的 Worker 子进程数量，
   `concurrency` 是每个 Worker 并发执行的任务数，`max_attempts` 是单条消息的最大尝试
   次数，`capacity` 是所有队列共享的未确认总数上限（默认 `None`，不限流）——
   语义均见[可靠性](reliability.md)；`task_timeout`（投递总时限，秒）、
@@ -80,7 +80,7 @@ async with binomic:
 - Redis key 前缀与消费者组名（`namespace`）由客户端与 Worker 各自按 `module_name`
   在内部派生，不是用户面参数：同一 `module_name` 的客户端与 Worker 自动共用命名空间；
 - `enqueued_at` 无需手工赋值：它在**实际投递时**由客户端进程内的 broker 在
-  enqueue 时盖戳（不是 `Message` 上的字段），延迟与周期任务也因此每次投递都拿到
+  enqueue 时写入时间戳（不是 `Message` 上的字段），延迟与周期任务也因此每次投递都拿到
   当前时间；
 - 可观测性由 `otel_enabled` 开启、`worker_init` 负责在 worker 子进程内安装 SDK，
   详见[可观测性](observability.md)。

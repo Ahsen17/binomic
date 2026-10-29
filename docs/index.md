@@ -17,7 +17,7 @@ Binomic 以装饰器声明任务，以 Redis Streams 投递消息，由多进程
   超时、超龄与耗尽次数的消息进 DLQ，详见[可靠性](guide/reliability.md)
 - **多进程 Worker**：Master 以 multiprocessing 启动多个 Worker 子进程，并携
   presence 心跳持续监督 —— 心跳走**进程间 IPC**（不经 Redis），因而在
-  `is_alive()` 之外还能识别「进程活着但已停跳」
+  `is_alive()` 之外还能识别「进程存活但心跳停滞」
 - **类型安全**：全量 mypy strict 与 ruff 检查，任务注册表基于泛型 `TaskSpec[P, T]`
 - **可观测性（可选）**：统一 structlog 日志；安装 `binomic[otel]` 后可产生跨进程
   关联的 traces 与执行耗时、投递滞留、队列深度等 metrics，详见

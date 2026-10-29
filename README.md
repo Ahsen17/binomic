@@ -84,7 +84,7 @@ def poll() -> None: ...
 第一个位置参数是队列名（需与 `queues` 配置对应），任务以函数名原样注册（区分大小写）；
 `cron` 与 `interval` 模式的函数不能带参数。任务还可以用 `on_dead=fn` 声明死信通知
 钩子：消息因超时、超龄或耗尽 `max_attempts` 进入 DLQ 后，`fn(entry, reason, exc)`
-会被调用一次（无返回值，钩子异常会被记录并吞掉），详见
+会被调用一次（无返回值，钩子异常会被记录并忽略），详见
 [可靠性指南](docs/guide/reliability.md)。
 
 ### 2. 启动并投递
@@ -101,14 +101,14 @@ factory = BinomicFactory(
 
 binomic: Binomic = factory.create()
 
-# 进入上下文后启动 Master（拉起 worker 子进程）并提供提交入口；
+# 进入上下文后启动 Master（创建 worker 子进程）并提供提交入口；
 # 构造时已自动发现 myapp 包内所有 tasks.py 模块并注册任务
 async with binomic:
     await binomic.submit(Message(task="example", args=[1]))
 ```
 
 消息进哪条 Stream 由任务声明里的队列决定（消息上不指定队列）；`enqueued_at` 由客户端进程内的
-broker 在 enqueue 时盖戳（不是 `Message` 上的字段），无需手工赋值。`submit`
+broker 在 enqueue 时写入时间戳（不是 `Message` 上的字段），无需手工赋值。`submit`
 只支持 `direct` 与 `delay` 两种模式：`cron` 与 `interval` 任务在客户端启动时自动注册，
 对其调用 `submit` 会抛 `ValueError`。Redis key 前缀与消费者组名（`namespace`）
 由客户端在内部按 `module_name` 派生，Worker 侧同样派生，两侧自动落在同一命名空间；
@@ -151,8 +151,8 @@ flowchart TD
     B -->|consumer group / PEL| W1[Worker 0<br>子进程]
     B -->|consumer group / PEL| W2[Worker 1<br>子进程]
     W1 -.->|失败：退避后重投<br>超时 / 超龄 / 耗尽：进 DLQ| B
-    M[Master<br>监督循环] -->|判死则重启| W1
-    M -->|判死则重启| W2
+    M[Master<br>监督循环] -->|判定失联则重启| W1
+    M -->|判定失联则重启| W2
     W1 -.->|presence 心跳：IPC| M
     W2 -.->|presence 心跳：IPC| M
 ```
@@ -166,13 +166,13 @@ flowchart TD
 - **Broker**：`RedisBroker` 将消息写入 Redis Streams：每队列 `:stream`（条目只存
   消息 id）+ `:hash`（完整封套），开启遥测时另有 `:context`（trace 上下文，按消息 id
   存放，ack/dead 时清理）；DLQ 是 `:dlq:stream` + `:dlq:hash`。失联消费者的 PEL
-  消息由 `reclaim`（`xautoclaim`）回收重投，重投时 `attempt + 1` 并重新盖戳；
+  消息由 `reclaim`（`xautoclaim`）回收重投，重投时 `attempt + 1` 并重新写入时间戳；
   失败重投则保留原 `enqueued_at`——`task_timeout` 是投递总时限。
-- **Master / Worker**：Master 监督循环运行在客户端进程内，以 multiprocessing 拉起
+- **Master / Worker**：Master 监督循环运行在客户端进程内，以 multiprocessing 创建
   Worker 子进程并监督其存活。
   心跳走**进程间 IPC**（每个 worker 一个共享 `multiprocessing.Value`，由 Master 创建、
-  随子进程构造传入），不经 Redis —— 因此 `is_alive()` 之外还能识别「进程活着但已停跳」；
-  Master 按 `heartbeat_interval` 的倍数轮询判死，命中即终止并重建同名 worker。
+  随子进程构造传入），不经 Redis —— 因此 `is_alive()` 之外还能识别「进程存活但心跳停滞」；
+  Master 按 `heartbeat_interval` 的倍数轮询心跳，判定失联即终止并重建同名 worker。
   Worker 在进程内通过 `anyio` 以配置并发执行任务。任务成功后 `ack`；失败则**退避后**
   在 `max_attempts` 之内重投，超时、超龄与耗尽次数的消息进死信队列（DLQ）；任务被取消
   时**不 ack**，消息留给 `reclaim`。

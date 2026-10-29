@@ -9,8 +9,8 @@ flowchart TD
     B -->|consumer group / PEL| W1[Worker 0<br>子进程]
     B -->|consumer group / PEL| W2[Worker 1<br>子进程]
     W1 -.->|失败：退避后重投<br>超时 / 超龄 / 耗尽：进 DLQ| B
-    M[Master<br>监督循环] -->|判死则重启| W1
-    M -->|判死则重启| W2
+    M[Master<br>监督循环] -->|判定失联则重启| W1
+    M -->|判定失联则重启| W2
     W1 -.->|presence 心跳：IPC| M
     W2 -.->|presence 心跳：IPC| M
 ```
@@ -33,12 +33,12 @@ flowchart TD
   失联消费者的 PEL 消息由 `reclaim`（`xautoclaim`）回收重投，重投时 `attempt + 1`。
   观测数据的产生与导出见[可观测性](observability.md)。
 - **Master / Worker**：Master 监督循环运行在客户端进程内，以 multiprocessing
-  拉起 Worker 子进程并监督其存活。
+  创建 Worker 子进程并监督其存活。
   心跳走**进程间 IPC** 而非 Redis：Master 为每个 worker 建一个共享
   `multiprocessing.Value`，随 `Worker` 构造参数传给子进程，子进程按期写入时间戳、
-  Master 直接读取判死。这样在 `is_alive()`（覆盖「进程已死」）之外，还能识别
-  「进程活着但已停跳」——后者是弱化掉心跳就检测不到的那一路。Worker 在进程内通过
+  Master 直接读取并判定是否失联。这样在 `is_alive()`（覆盖「进程已死」）之外，还能识别
+  「进程存活但心跳停滞」——弱化心跳机制后这一情形将无法检测。Worker 在进程内通过
   `anyio` 以配置并发执行任务。任务成功后 `ack`；失败则**退避后**
-  在 `max_attempts` 之内重投（退避经 Worker 自有的调度器延时投递，重投与 ack 原件由
+  在 `max_attempts` 之内重投（退避经 Worker 自有的调度器延时投递，重投与原条目的 ack 由
   单条 Lua 脚本原子完成）；超时、超龄与耗尽次数的消息进死信队列（DLQ）；
   任务被取消时**不 ack**，消息留给 `reclaim`。详见[可靠性](reliability.md)。

@@ -1,7 +1,7 @@
 """OpenTelemetry integration for binomic.
 
 A standalone module so the optional dependency and every trace/metric
-gateway live behind one boundary: core code imports ``binomic.otel`` and
+wrapper live behind one boundary: core code imports ``binomic.otel`` and
 never touches ``opentelemetry`` directly.
 """
 

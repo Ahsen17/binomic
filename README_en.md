@@ -170,8 +170,8 @@ flowchart TD
     B -->|consumer group / PEL| W1[Worker 0<br>subprocess]
     B -->|consumer group / PEL| W2[Worker 1<br>subprocess]
     W1 -.->|failure: redeliver after a backoff<br>timeout / stale / exhausted: to the DLQ| B
-    M[Master<br>supervision loop] -->|restart when dead| W1
-    M -->|restart when dead| W2
+    M[Master<br>supervision loop] -->|restart when unresponsive| W1
+    M -->|restart when unresponsive| W2
     W1 -.->|presence heartbeat: IPC| M
     W2 -.->|presence heartbeat: IPC| M
 ```
@@ -201,7 +201,7 @@ flowchart TD
   through Redis -- so beyond `is_alive()` it can still recognise a process that
   is up but has stopped beating; the master polls at a multiple of
   `heartbeat_interval` and terminates and rebuilds a worker the moment it is
-  judged dead. Each worker executes tasks concurrently within its process via
+  found unresponsive. Each worker executes tasks concurrently within its process via
   `anyio`. A task that succeeds is `ack`ed; one that fails is redelivered
   **after a backoff** while `max_attempts` lasts — the copy and the ack of the
   original are one atomic Lua call; timed-out, stale and exhausted messages

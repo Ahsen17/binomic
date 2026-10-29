@@ -128,7 +128,10 @@ automatically when the client starts, and calling `submit` on them raises
 `ValueError`. The worker tuning knobs are `BinomicConfig` fields too:
 `task_timeout` / `read_count` / `poll_interval` / `heartbeat_interval` /
 `reclaim_interval` — see the [reliability guide](docs/en/guide/reliability.md).
-The telemetry switch `otel_enabled` and the subprocess hook `worker_init` are
+The producer-side capacity limit `capacity` (one cap for every queue's
+unacknowledged total, `None` unlimited by default) is one of its fields too;
+see the same guide. The telemetry switch `otel_enabled` and the subprocess
+hook `worker_init` are
 `BinomicConfig` fields too; see the
 [observability guide](docs/en/guide/observability.md). The Redis key prefix and consumer group name (`namespace`) are
 derived internally from `module_name` by both the client and the workers, so
@@ -167,8 +170,8 @@ flowchart TD
     B -->|consumer group / PEL| W1[Worker 0<br>subprocess]
     B -->|consumer group / PEL| W2[Worker 1<br>subprocess]
     W1 -.->|failure: redeliver after a backoff<br>timeout / stale / exhausted: to the DLQ| B
-    M[Master<br>supervision loop] -->|restart when dead| W1
-    M -->|restart when dead| W2
+    M[Master<br>supervision loop] -->|restart when unresponsive| W1
+    M -->|restart when unresponsive| W2
     W1 -.->|presence heartbeat: IPC| M
     W2 -.->|presence heartbeat: IPC| M
 ```
@@ -198,7 +201,7 @@ flowchart TD
   through Redis -- so beyond `is_alive()` it can still recognise a process that
   is up but has stopped beating; the master polls at a multiple of
   `heartbeat_interval` and terminates and rebuilds a worker the moment it is
-  judged dead. Each worker executes tasks concurrently within its process via
+  found unresponsive. Each worker executes tasks concurrently within its process via
   `anyio`. A task that succeeds is `ack`ed; one that fails is redelivered
   **after a backoff** while `max_attempts` lasts — the copy and the ack of the
   original are one atomic Lua call; timed-out, stale and exhausted messages
@@ -211,20 +214,44 @@ The list below tracks the known gaps and the planned iteration order; a
 checked box means done. For what has landed, see
 [CHANGELOG.md](CHANGELOG.md).
 
-- [ ] **P0 · Persisted delayed jobs** -- `delay`-mode submissions still depend
-  on the scheduler living in the client process's memory and are lost on exit;
-  they need to be persisted (queued on the Redis side)
+- [x] **P0 · OTel-instrumented supervision** -- the Master's supervision surface
+  is now on `binomic[otel]`: a `binomic.worker.heartbeat.age` gauge and a
+  `binomic.worker.restarts` counter (with the `binomic.worker.reason`
+  attribute), emitted by the supervision loop in the client process for both
+  alerting and audit; orderly shutdown is not counted as restarts
+- [x] **P0 · Persisted delayed jobs** -- adjudicated: **not built**. `delay`
+  stays as an in-process convenience with **non-durable** semantics
+  (submissions live in the client process's in-memory scheduler and are lost
+  on exit; see the [scheduling guide](docs/guide/scheduling.md)); delayed
+  delivery that survives restarts will only be built once a real use case
+  shows up, as Redis-side queueing
 - [x] **P0 · Bounded storage** -- ack/dead/reclaim `XDEL` terminal entries;
   radix-tree nodes are released once fully deleted, so live queues are a
   sliding window that does not grow with history (verified empirically). The
   DLQ is deliberately never auto-pruned (audit/replay surface); iterate on a
   retention policy only if it is ever needed
+- [ ] **P1 · DLQ operations tooling** -- standardized entry points for replay,
+  inspection and retention policy; the data plane is in place (the DLQ is
+  deliberately never auto-pruned), the management plane is missing
 - [x] **P1 · Configuration** -- `task_timeout` / `heartbeat_interval` /
   `reclaim_interval` / `read_count` / `poll_interval` are now `BinomicConfig`
   fields, mapped into the `WorkerPolicy` on context entry
 - [x] **P1 · Dead-letter queue** -- timed-out, stale and exhausted messages
   land in the DLQ (`{namespace}:{queue}:dlq:stream` + `:dlq:hash`), inspectable
   and replayable
+- [ ] **P2 · Redis HA compatibility** -- verify that the six Lua scripts and
+  consumer-group semantics hold under Sentinel/Cluster topologies
+- [ ] **P2 · Producer-side rate limiting** -- a cap on submissions per unit
+  of time; the volume dimension is already covered by the producer-side
+  capacity limit below, and the rate mechanism is left to its own task
+- [ ] **P2 · Large-scale stability testing** -- soak tests across multiple
+  instances, Redis flaps and network partitions
+- [x] **P2 · Producer-side capacity limit** -- `BinomicConfig.capacity` caps
+  every queue's unacknowledged total (the stream length); submissions onto a
+  full queue are rejected immediately: `direct` raises `QueueCapacityError`,
+  scheduled paths log, count the rejection and drop the round; the check is
+  atomic with the enqueue in one script, and retry/reclaim keep the depth
+  constant so they never consume capacity. See the reliability guide
 - [x] **P2 · Multi-instance** -- consumer names carry hostname + master-pid
   prefixes, so instances never collide on the same host or across hosts, and
   reclaim sweeps away dead empty-PEL consumers, so several client instances can

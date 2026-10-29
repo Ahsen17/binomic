@@ -1,5 +1,6 @@
 """Client semantics: registration, submit branches, context lifecycle."""
 
+import logging
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -10,8 +11,9 @@ from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 from pytest_mock import MockerFixture
 
-from binomic.broker import Broker, Message, RedisBroker
+from binomic.broker import Broker, Message, QueueCapacityError, RedisBroker
 from binomic.client import Binomic, BinomicConfig, BinomicFactory
+from binomic.otel import MESSAGING_DESTINATION_NAME, TASK_NAME
 from binomic.task import TaskNotFoundError
 
 APP_SOURCE = """\
@@ -145,7 +147,7 @@ class TestSubmit:
         assert underlying is not None
         jobs = underlying.get_jobs()
         assert len(jobs) == 1
-        assert jobs[0].func.__name__ == "_deliver"
+        assert jobs[0].func.__name__ == "_deliver_scheduled"
         # (queue, message) pair the job will enqueue with.
         assert jobs[0].args[0] == "delayq"
         assert jobs[0].args[1].task == "later"
@@ -426,6 +428,187 @@ class TestTelemetrySubmission:
         broker = client._broker
         assert isinstance(broker, RedisBroker)
         assert await broker.trace_context("default", str(message.id)) is None
+
+        await client.close()
+
+
+def _rejection_points(metric_reader: Any) -> list[Any]:
+    """Collect every ``binomic.task.rejections`` data point accumulated."""
+
+    points: list[Any] = []
+    data = metric_reader.get_metrics_data()
+    for resource_metrics in data.resource_metrics if data else []:
+        for scope_metrics in resource_metrics.scope_metrics:
+            for metric in scope_metrics.metrics:
+                if metric.name == "binomic.task.rejections":
+                    points.extend(metric.data.data_points)
+
+    return points
+
+
+class TestCapacityRejection:
+    async def test_direct_rejection_raises_and_counts(
+        self,
+        make_client: Callable[..., Binomic],
+        make_message: Callable[..., Message],
+        otel_sdk: Any,
+    ) -> None:
+
+        _, metric_reader = otel_sdk
+
+        client = make_client(
+            config=BinomicConfig(
+                queues=["default", "delayq", "cronq"],
+                capacity=1,
+                otel_enabled=True,
+            )
+        )
+        await client.start()
+
+        await client.submit(make_message(task="alpha"))
+
+        with pytest.raises(QueueCapacityError) as excinfo:
+            await client.submit(make_message(task="alpha"))
+
+        assert excinfo.value.current == 1
+        assert excinfo.value.capacity == 1
+
+        points = _rejection_points(metric_reader)
+        assert sum(int(point.value) for point in points) >= 1
+        assert any(
+            point.attributes.get(TASK_NAME) == "alpha"
+            and point.attributes.get(MESSAGING_DESTINATION_NAME) == "default"
+            for point in points
+        )
+
+        await client.close()
+
+    async def test_scheduled_rejection_is_counted_and_dropped(
+        self,
+        make_client: Callable[..., Binomic],
+        make_message: Callable[..., Message],
+        otel_sdk: Any,
+    ) -> None:
+
+        _, metric_reader = otel_sdk
+
+        client = make_client(
+            config=BinomicConfig(
+                queues=["default", "delayq", "cronq"],
+                capacity=1,
+                otel_enabled=True,
+            )
+        )
+        await client.start()
+
+        broker = client._broker
+        assert isinstance(broker, RedisBroker)
+        assert await broker.enqueue("delayq", make_message(task="later")) is not None
+
+        before = sum(int(point.value) for point in _rejection_points(metric_reader))
+
+        # A scheduler job has no caller channel: nothing escapes the call and
+        # the rejection lands in the counter instead.
+        await client._deliver_scheduled("delayq", make_message(task="later"))
+
+        after = sum(int(point.value) for point in _rejection_points(metric_reader))
+        assert after == before + 1
+
+        await client.close()
+
+    async def test_periodic_round_keeps_its_producer_span(
+        self,
+        make_client: Callable[..., Binomic],
+        make_message: Callable[..., Message],
+        otel_sdk: Any,
+    ) -> None:
+        """Cron/interval rounds go through ``_enqueue``: each delivery
+        produces its own producer span and trace context."""
+
+        span_exporter, _ = otel_sdk
+        span_exporter.clear()
+
+        client = make_client(
+            config=BinomicConfig(queues=["default", "delayq", "cronq"], otel_enabled=True)
+        )
+        await client.start()
+
+        message = make_message(task="cronned")
+        await client._deliver_scheduled("cronq", message)
+
+        assert any(
+            span.name == "create cronq" for span in span_exporter.get_finished_spans()
+        )
+
+        broker = client._broker
+        assert isinstance(broker, RedisBroker)
+        context = await broker.trace_context("cronq", str(message.id))
+        assert context is not None
+        assert context["traceparent"].startswith("00-")
+
+        await client.close()
+
+    async def test_disabled_telemetry_emits_no_rejections(
+        self,
+        make_client: Callable[..., Binomic],
+        make_message: Callable[..., Message],
+        otel_sdk: Any,
+    ) -> None:
+
+        _, metric_reader = otel_sdk
+
+        client = make_client(
+            config=BinomicConfig(queues=["default", "delayq", "cronq"], capacity=1)
+        )
+        await client.start()
+
+        # Gated off: no counter exists, so nothing can be emitted.
+        assert client._rejections is None
+
+        broker = client._broker
+        assert isinstance(broker, RedisBroker)
+        assert await broker.enqueue("delayq", make_message(task="later")) is not None
+
+        before = sum(int(point.value) for point in _rejection_points(metric_reader))
+        await client._deliver_scheduled("delayq", make_message(task="later"))
+        after = sum(int(point.value) for point in _rejection_points(metric_reader))
+
+        assert after == before
+
+        await client.close()
+
+    async def test_scheduled_rejection_logs_and_drops(
+        self,
+        make_client: Callable[..., Binomic],
+        make_message: Callable[..., Message],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+
+        client = make_client(
+            config=BinomicConfig(
+                queues=["default", "delayq", "cronq"],
+                capacity=1,
+            )
+        )
+        await client.start()
+
+        broker = client._broker
+        assert isinstance(broker, RedisBroker)
+        assert await broker.enqueue("delayq", make_message(task="later")) is not None
+
+        # A scheduler job has no caller channel: the rejection is logged,
+        # counted and dropped — nothing propagates out of the delivery call.
+        with caplog.at_level(logging.WARNING, logger="binomic.client.client"):
+            await client._deliver_scheduled("delayq", make_message(task="later"))
+
+        assert any(
+            "queue capacity reached" in record.getMessage() for record in caplog.records
+        )
+        entries = await broker._ensure_client().xrange(
+            f"{broker._group}:delayq:stream", "-", "+"
+        )
+        assert entries is not None
+        assert len(entries) == 1
 
         await client.close()
 

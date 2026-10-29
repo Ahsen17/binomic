@@ -2,12 +2,12 @@
 
 The only place in ``src`` that imports ``opentelemetry``. The dependency is
 optional (``binomic[otel]``): this module always imports, and the
-context/error gateways degrade to no-ops when the extra is missing. The
-``create_*``/``start_*`` gateways require the extra: callers reach them only
+context/error helpers degrade to no-ops when the extra is missing. The
+``create_*``/``start_*`` helpers require the extra: callers reach them only
 after ``ensure_available()`` (run by the client and worker when
 ``otel_enabled=True``), so a missing extra fails early instead of midway.
 
-Library code talks to the OpenTelemetry *API* through these gateways; the
+Library code talks to the OpenTelemetry *API* through these helpers; the
 SDK, its providers and any exporter belong to the application embedding
 binomic. With no provider set every call is a no-op proxy.
 """
@@ -29,6 +29,7 @@ __all__ = (
     "MESSAGING_SYSTEM",
     "MESSAGING_SYSTEM_VALUE",
     "QUEUE_NAME",
+    "RESTART_REASON",
     "TASK_ATTEMPT",
     "TASK_NAME",
     "WORKER_CONSUMER",
@@ -61,6 +62,7 @@ TASK_ATTEMPT: Final = "binomic.task.attempt"
 QUEUE_NAME: Final = "binomic.queue.name"
 WORKER_CONSUMER: Final = "binomic.worker.consumer"
 DEAD_REASON: Final = "binomic.dead.reason"
+RESTART_REASON: Final = "binomic.worker.reason"
 
 # The W3C Trace Context fields persisted for delivery.
 _TRACE_KEYS: Final[tuple[str, ...]] = ("traceparent", "tracestate", "baggage")

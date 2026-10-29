@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from binomic.base import BaseStruct
 
@@ -8,11 +8,18 @@ __all__ = ("ScriptResponse",)
 class ScriptResponse(BaseStruct):
     """Envelope a Lua script returns.
 
-    Scripts catch their own failures and answer with ``ok=False`` and a
-    human-readable ``error`` instead of raising, so the broker logs the cause
-    and degrades to an empty result rather than killing its caller's loop.
+    ``status`` classifies the reply in three states: ``ok`` carries the
+    operation result in ``result``; ``rejected`` is an *expected* capacity
+    refusal and carries a ``{"current", "capacity"}`` detail in ``result``;
+    ``error`` is an internal failure described by ``error``, which the
+    broker logs and degrades on instead of killing its caller's loop.
     """
 
-    ok: bool
+    status: Literal["ok", "rejected", "error"]
     result: Any | None = None
     error: str | None = None
+
+    @property
+    def ok(self) -> bool:
+
+        return self.status == "ok"

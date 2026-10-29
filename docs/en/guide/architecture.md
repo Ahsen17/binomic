@@ -9,8 +9,8 @@ flowchart TD
     B -->|consumer group / PEL| W1[Worker 0<br>subprocess]
     B -->|consumer group / PEL| W2[Worker 1<br>subprocess]
     W1 -.->|failure: redeliver after a backoff<br>timeout / stale / exhausted: to the DLQ| B
-    M[Master<br>supervision loop] -->|restart when dead| W1
-    M -->|restart when dead| W2
+    M[Master<br>supervision loop] -->|restart when unresponsive| W1
+    M -->|restart when unresponsive| W2
     W1 -.->|presence heartbeat: IPC| M
     W2 -.->|presence heartbeat: IPC| M
 ```

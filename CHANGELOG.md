@@ -46,8 +46,6 @@
 ### ⚙️ Miscellaneous Tasks
 
 - Upgrade to v0.3.0
-
-
 ## [0.2.0] - 2026-10-18
 
 ### 🚀 Features
@@ -87,8 +85,6 @@
 - Add missing trailing newlines
 - Update tooling configuration
 - Upgrade to v0.2.0
-
-
 ## [0.1.3] - 2026-10-10
 
 ### 🐛 Bug Fixes
@@ -99,11 +95,17 @@
 
 - Switch logging engine to structlog
 
+### 📚 Documentation
+
+- Align latest vesion v0.1.2
+
 ### 🧪 Testing
 
 - Route structlog through stdlib logging so caplog captures records
 
+### ⚙️ Miscellaneous Tasks
 
+- Upgrade to v0.1.3
 ## [0.1.2] - 2026-10-10
 
 ### 🚀 Features
@@ -114,6 +116,9 @@
 ### 🐛 Bug Fixes
 
 - Fail task mode arg
+- Type-check error
+- Type-check error
+- Type-check error
 
 ### 🚜 Refactor
 
@@ -145,8 +150,7 @@
 
 - Capitalize the author name in project metadata
 - Add the 0.1.1 changelog entry
-
-
+- Upgrade to v0.1.2
 ## [0.1.1] - 2026-10-08
 
 ### 🚀 Features
@@ -185,8 +189,6 @@
 ### ⚙️ Miscellaneous Tasks
 
 - Upgrade to version 0.1.1
-
-
 ## [0.1.0] - 2026-10-06
 
 ### 🚀 Features

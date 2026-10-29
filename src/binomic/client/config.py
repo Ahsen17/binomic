@@ -16,6 +16,11 @@ class BinomicConfig(BaseStruct):
     seconds; ``read_count`` and ``poll_interval`` shape each worker's fetch
     loop; ``heartbeat_interval`` and ``reclaim_interval`` set the liveness
     beat and crash-recovery cadence.
+    ``capacity`` caps every queue's unacknowledged total (its stream length:
+    messages stay in the stream from submission until ack or dead), so
+    submissions onto a full queue are rejected immediately; unlimited by
+    default. Retry and reclaim re-entries keep the total constant and never
+    consume capacity.
     ``worker_init`` runs once per worker subprocess before its event loop
     starts (the hook for installing OpenTelemetry SDK providers), and
     ``otel_enabled`` gates all telemetry — with the default ``False`` binomic
@@ -36,5 +41,14 @@ class BinomicConfig(BaseStruct):
     heartbeat_interval: float = 5.0
     reclaim_interval: float = 30.0
 
+    capacity: int | None = None
+
     worker_init: Callable[[], None] | None = None
     otel_enabled: bool = False
+
+    def __post_init__(self) -> None:
+
+        if self.capacity is not None and self.capacity < 0:
+            raise ValueError(
+                f"`capacity` must be None or a non-negative integer, got {self.capacity}",
+            )

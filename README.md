@@ -84,7 +84,7 @@ def poll() -> None: ...
 第一个位置参数是队列名（需与 `queues` 配置对应），任务以函数名原样注册（区分大小写）；
 `cron` 与 `interval` 模式的函数不能带参数。任务还可以用 `on_dead=fn` 声明死信通知
 钩子：消息因超时、超龄或耗尽 `max_attempts` 进入 DLQ 后，`fn(entry, reason, exc)`
-会被调用一次（无返回值，钩子异常会被记录并吞掉），详见
+会被调用一次（无返回值，钩子异常会被记录并忽略），详见
 [可靠性指南](docs/guide/reliability.md)。
 
 ### 2. 启动并投递
@@ -101,20 +101,22 @@ factory = BinomicFactory(
 
 binomic: Binomic = factory.create()
 
-# 进入上下文后启动 Master（拉起 worker 子进程）并提供提交入口；
+# 进入上下文后启动 Master（创建 worker 子进程）并提供提交入口；
 # 构造时已自动发现 myapp 包内所有 tasks.py 模块并注册任务
 async with binomic:
     await binomic.submit(Message(task="example", args=[1]))
 ```
 
 消息进哪条 Stream 由任务声明里的队列决定（消息上不指定队列）；`enqueued_at` 由客户端进程内的
-broker 在 enqueue 时盖戳（不是 `Message` 上的字段），无需手工赋值。`submit`
+broker 在 enqueue 时写入时间戳（不是 `Message` 上的字段），无需手工赋值。`submit`
 只支持 `direct` 与 `delay` 两种模式：`cron` 与 `interval` 任务在客户端启动时自动注册，
 对其调用 `submit` 会抛 `ValueError`。Redis key 前缀与消费者组名（`namespace`）
 由客户端在内部按 `module_name` 派生，Worker 侧同样派生，两侧自动落在同一命名空间；
 它不是用户面参数。Worker 的调节旋钮同样是 `BinomicConfig` 字段：
 `task_timeout` / `read_count` / `poll_interval` / `heartbeat_interval` /
-`reclaim_interval`，语义见[可靠性指南](docs/guide/reliability.md)；可观测性开关
+`reclaim_interval`，语义见[可靠性指南](docs/guide/reliability.md)；投递侧容量上限
+`capacity`（所有队列未确认总数的统一上限，默认 `None` 不限流）也是它的字段，见同一
+指南；可观测性开关
 `otel_enabled` 与子进程初始化钩子 `worker_init` 同样是它的字段，见
 [可观测性指南](docs/guide/observability.md)。
 
@@ -149,8 +151,8 @@ flowchart TD
     B -->|consumer group / PEL| W1[Worker 0<br>子进程]
     B -->|consumer group / PEL| W2[Worker 1<br>子进程]
     W1 -.->|失败：退避后重投<br>超时 / 超龄 / 耗尽：进 DLQ| B
-    M[Master<br>监督循环] -->|判死则重启| W1
-    M -->|判死则重启| W2
+    M[Master<br>监督循环] -->|判定失联则重启| W1
+    M -->|判定失联则重启| W2
     W1 -.->|presence 心跳：IPC| M
     W2 -.->|presence 心跳：IPC| M
 ```
@@ -164,13 +166,13 @@ flowchart TD
 - **Broker**：`RedisBroker` 将消息写入 Redis Streams：每队列 `:stream`（条目只存
   消息 id）+ `:hash`（完整封套），开启遥测时另有 `:context`（trace 上下文，按消息 id
   存放，ack/dead 时清理）；DLQ 是 `:dlq:stream` + `:dlq:hash`。失联消费者的 PEL
-  消息由 `reclaim`（`xautoclaim`）回收重投，重投时 `attempt + 1` 并重新盖戳；
+  消息由 `reclaim`（`xautoclaim`）回收重投，重投时 `attempt + 1` 并重新写入时间戳；
   失败重投则保留原 `enqueued_at`——`task_timeout` 是投递总时限。
-- **Master / Worker**：Master 监督循环运行在客户端进程内，以 multiprocessing 拉起
+- **Master / Worker**：Master 监督循环运行在客户端进程内，以 multiprocessing 创建
   Worker 子进程并监督其存活。
   心跳走**进程间 IPC**（每个 worker 一个共享 `multiprocessing.Value`，由 Master 创建、
-  随子进程构造传入），不经 Redis —— 因此 `is_alive()` 之外还能识别「进程活着但已停跳」；
-  Master 按 `heartbeat_interval` 的倍数轮询判死，命中即终止并重建同名 worker。
+  随子进程构造传入），不经 Redis —— 因此 `is_alive()` 之外还能识别「进程存活但心跳停滞」；
+  Master 按 `heartbeat_interval` 的倍数轮询心跳，判定失联即终止并重建同名 worker。
   Worker 在进程内通过 `anyio` 以配置并发执行任务。任务成功后 `ack`；失败则**退避后**
   在 `max_attempts` 之内重投，超时、超龄与耗尽次数的消息进死信队列（DLQ）；任务被取消
   时**不 ack**，消息留给 `reclaim`。
@@ -180,18 +182,35 @@ flowchart TD
 以下是当前已知缺口与迭代规划，按优先级排列，勾选即完成；已落地的能力以
 [CHANGELOG.md](CHANGELOG.md) 为准。
 
-- [ ] **P0 · 延时作业持久化** —— `delay` 模式的提交仍依赖客户端进程内存中的调度器，
-  进程退出即丢；需要将延时作业落盘（Redis 侧排队）
+- [x] **P0 · 进程监督 OTel 化** —— Master 监督面已接入 `binomic[otel]`：
+  `binomic.worker.heartbeat.age` gauge 与 `binomic.worker.restarts` counter
+  （带 `binomic.worker.reason` 属性）由客户端进程内的监督循环发射，告警与审计
+  两用；正常停机不计入重启
+- [x] **P0 · 延时作业持久化** —— 已裁决：**不做**。`delay` 保留为进程内延时糖，
+  语义为**非持久**（提交驻留在客户端进程内存的调度器中，进程退出即丢，边界见
+  [调度文档](docs/guide/scheduling.md)）；跨重启的延时投递在出现真实使用场景前不建设，
+  届时按 Redis 侧排队立项
 - [x] **P0 · 存储有界** —— ack/dead/reclaim 对终态条目做 `XDEL` 清理；radix 树节点在
   整节点删空后即释放，主队列实为滑动窗口、不随历史增长（已实测验证）。DLQ 有意不自动
   清理（审计/重放面），保留策略如需再另行迭代
+- [ ] **P1 · DLQ 运维工具链** —— 回放、检查与保留策略的标准化入口；数据面已备
+  （DLQ 有意不自动清理），缺管理面
 - [x] **P1 · 配置开放** —— `task_timeout` / `heartbeat_interval` /
   `reclaim_interval` / `read_count` / `poll_interval` 已提升为 `BinomicConfig` 字段，
   进 context 时映射进 `WorkerPolicy`
 - [x] **P1 · 死信队列** —— 超时、超龄与超出 `max_attempts` 的消息进入 DLQ
   （`{namespace}:{queue}:dlq:stream` + `:dlq:hash`），可检查、可重放
+- [ ] **P2 · Redis HA 兼容验证** —— Sentinel/Cluster 拓扑下六个 Lua 脚本与
+  consumer group 语义的兼容性验证
+- [ ] **P2 · 投递侧速率上限** —— 单位时间投递数上限；容量维度已由
+  「投递侧容量上限」覆盖，速率机制另立任务调研
+- [ ] **P2 · 大规模稳定性验证** —— 多实例、Redis 抖动与网络分区下的长稳测试
+- [x] **P2 · 投递侧容量上限** —— `BinomicConfig.capacity` 为所有队列的未确认总数
+  （stream 长度）设置统一上限，达到上限的新提交立即拒绝：`direct` 路径抛
+  `QueueCapacityError`，调度路径记录日志与拒绝计数后放弃本轮；检查与入队同脚本
+  原子完成，retry/reclaim 前后深度不变、不占额度。详见可靠性指南
 - [x] **P2 · 多实例** —— consumer 名带 hostname + Master pid 前缀（同主机与跨主机
-  实例均不撞名）+ reclaim 顺带清扫空 PEL 的死 consumer，支持同一 Redis 库上并存多个
+  实例均不撞名）+ reclaim 顺带清扫空 PEL 的已消失 consumer，支持同一 Redis 库上并存多个
   客户端实例
 - [x] **P2 · 可观测性** —— 统一 structlog 日志（提交、执行、重试/DLQ、监督与
   生命周期）；可选 `binomic[otel]` 提供 traces 与 metrics：producer/consumer span

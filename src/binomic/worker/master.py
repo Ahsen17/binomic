@@ -1,11 +1,20 @@
 import os
 import socket
 import time
+from collections.abc import Iterable
 from multiprocessing import get_context
 from typing import TYPE_CHECKING, Any, Final, Literal
 
 import anyio
 import structlog
+
+from binomic.otel import (
+    RESTART_REASON,
+    WORKER_CONSUMER,
+    create_counter,
+    create_observable_gauge,
+    ensure_available,
+)
 
 from .presence import MasterPresence, SubprocessPresence
 from .worker import Worker
@@ -51,6 +60,33 @@ class Master:
 
         self._subprocesses: dict[str, BaseProcess] = {}
         self._presence = MasterPresence()
+
+        self._restarts: Any | None = None
+
+        if self._policy.worker_policy.otel_enabled:
+            ensure_available()
+
+            self._restarts = create_counter(
+                name="binomic.worker.restarts",
+                unit="{worker}",
+            )
+
+            create_observable_gauge(
+                name="binomic.worker.heartbeat.age",
+                unit="s",
+                observe=self._heartbeat_ages,
+            )
+
+    def _heartbeat_ages(
+        self,
+    ) -> Iterable[tuple[float, dict[str, str]]]:
+
+        now = time.time()
+
+        return [
+            (now - beat, {WORKER_CONSUMER: consumer})
+            for consumer, beat in self._presence.presence().items()
+        ]
 
     def _run_proc(self, consumer: str) -> None:
 
@@ -123,11 +159,22 @@ class Master:
                 )
 
                 if stalled or not process.is_alive():
+                    reason = "heartbeat" if stalled else "dead"
+
                     logger.warning(
                         "Worker restarted",
                         consumer=consumer,
-                        reason="heartbeat" if stalled else "dead",
+                        reason=reason,
                     )
+
+                    if self._restarts is not None:
+                        self._restarts.add(
+                            1,
+                            attributes={
+                                WORKER_CONSUMER: consumer,
+                                RESTART_REASON: reason,
+                            },
+                        )
 
                     await anyio.to_thread.run_sync(self._stop_proc, process)
 

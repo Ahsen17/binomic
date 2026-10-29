@@ -11,6 +11,7 @@ from binomic.broker import (
     BrokerLifecycleMixin,
     BrokerTelemetryMixin,
     Message,
+    QueueCapacityError,
 )
 from binomic.otel import (
     MESSAGING_DESTINATION_NAME,
@@ -76,12 +77,18 @@ class Binomic(AsyncContextManagerMixin):
         self._registry = TaskRegistry()
 
         self._submissions: Any | None = None
+        self._rejections: Any | None = None
 
         if self._config.otel_enabled:
             ensure_available()
 
             self._submissions = create_counter(
                 name="binomic.task.submissions",
+                unit="{task}",
+            )
+
+            self._rejections = create_counter(
+                name="binomic.task.rejections",
                 unit="{task}",
             )
 
@@ -96,6 +103,7 @@ class Binomic(AsyncContextManagerMixin):
                 dsn=self._broker_dsn,
                 queues=self._config.queues,
                 namespace=f"{self._module_name}",
+                capacity=self._config.capacity,
                 **self._broker_kwargs,
             ).create()
 
@@ -189,20 +197,84 @@ class Binomic(AsyncContextManagerMixin):
         ):
             await self._deliver(queue, message, capture_context())
 
+    def _count_rejection(self, task: str, queue: str) -> None:
+
+        if self._rejections is not None:
+            self._rejections.add(
+                1,
+                attributes={
+                    TASK_NAME: task,
+                    MESSAGING_DESTINATION_NAME: queue,
+                },
+            )
+
+    async def _deliver_scheduled(
+        self,
+        queue: str,
+        message: "Message",
+        carrier: dict[str, str] | None = None,
+    ) -> None:
+        """Deliver inside a scheduler job, where no caller channel exists.
+
+        A carrier means the producer span and trace context were already
+        captured at ``submit`` time (the delay path); without one — the
+        cron/interval registrations — the delivery goes through ``_enqueue``
+        so each round produces its own span and context, as it always did.
+        A capacity rejection there degrades to a warning and a rejection
+        count: delay success only ever meant *scheduled* (and the in-memory
+        job is non-durable), while cron/interval rounds come back on their
+        own. Nothing is re-enqueued and no exception escapes into the job.
+        """
+
+        try:
+            if carrier:
+                await self._deliver(queue, message, carrier)
+
+            else:
+                await self._enqueue(queue, message)
+
+        except QueueCapacityError as err:
+            self._count_rejection(message.task, queue)
+
+            logger.warning(
+                "Task submission rejected: queue capacity reached",
+                task=message.task,
+                queue=queue,
+                message_id=str(message.id),
+                current=err.current,
+                capacity=err.capacity,
+            )
+
     async def submit(self, message: "Message") -> None:
+        """Submit a message for delivery according to its task's mode.
+
+        ``direct`` enqueues immediately and raises ``QueueCapacityError``
+        when the target queue is full; internal enqueue failures keep
+        degrading silently. ``delay`` schedules the enqueue on the client
+        process's in-memory scheduler, so success only means *scheduled* and
+        the job is lost if the process exits before the delay elapses; a
+        queue that is full when the delay fires logs and counts the
+        rejection and drops that delivery. ``cron`` and ``interval`` tasks
+        are periodic and reject ``submit``.
+        """
 
         spec = self._registry.get(message.task)
 
         match spec.mode:
             case "direct":
-                # TODO: enqueue failure is silent — `enqueue` degrades to None
-                # on script-level errors and the result goes unchecked here;
-                # the delay/cron/interval paths enqueue inside APScheduler
-                # jobs with no channel back to the caller. Plan: a shared
-                # `_checked_enqueue` (raise on None) for all enqueue-fed
-                # paths, a submit docstring contract (delay success only
-                # means scheduled), and optionally a bounded in-job retry.
-                await self._enqueue(spec.queue, message)
+                # TODO: internal enqueue failures are still silent —
+                # `enqueue` degrades to None on script-level errors and the
+                # result goes unchecked here. Capacity rejections are no
+                # longer silent: they raise out of `enqueue` (counted and
+                # re-raised below). Plan: a shared `_checked_enqueue` (raise
+                # on None) for all enqueue-fed paths, and optionally a
+                # bounded in-job retry for the scheduled paths.
+                try:
+                    await self._enqueue(spec.queue, message)
+
+                except QueueCapacityError:
+                    self._count_rejection(message.task, spec.queue)
+                    raise
 
             case "delay":
                 if spec.delay is None or spec.delay <= 0:
@@ -217,7 +289,7 @@ class Binomic(AsyncContextManagerMixin):
                     carrier = self._capture(spec.queue, message)
 
                 self._ensure_scheduler().delay(
-                    func=self._deliver,
+                    func=self._deliver_scheduled,
                     delay=spec.delay,
                     args=(
                         spec.queue,
@@ -261,7 +333,7 @@ class Binomic(AsyncContextManagerMixin):
                         )
 
                     scheduler.interval(
-                        func=self._enqueue,
+                        func=self._deliver_scheduled,
                         interval=spec.interval,
                         args=(spec.queue, Message(task=spec.name)),
                     )
@@ -274,7 +346,7 @@ class Binomic(AsyncContextManagerMixin):
                         )
 
                     scheduler.cron(
-                        func=self._enqueue,
+                        func=self._deliver_scheduled,
                         cron=spec.cron,
                         args=(spec.queue, Message(task=spec.name)),
                     )

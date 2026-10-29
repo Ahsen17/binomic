@@ -76,8 +76,9 @@ async with binomic:
   liveness supervision of workers goes over inter-process IPC and needs no Redis;
 - in `BinomicConfig`, `workers` is the number of worker subprocesses the
   master spawns, `concurrency` is the number of tasks each worker runs
-  concurrently, and `max_attempts` is the attempt budget for a single message —
-  see [Reliability](reliability.md) for its semantics; `task_timeout` (total
+  concurrently, and `max_attempts` is the attempt budget for a single message, while
+  `capacity` is one unacknowledged-total cap shared by every queue (default
+  `None`, unlimited) — see [Reliability](reliability.md) for both; `task_timeout` (total
   delivery deadline, in seconds), `read_count` and `poll_interval` (the fetch
   loop), and `heartbeat_interval` and `reclaim_interval` (the liveness beat
   and crash-recovery cadence) are fields too, with defaults in the API

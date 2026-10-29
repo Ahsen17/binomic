@@ -1,3 +1,4 @@
+from .exceptions import QueueCapacityError
 from .factory import BrokerFactory
 from .message import Message, MessageEntry
 from .protocols import Broker, BrokerLifecycleMixin, BrokerTelemetryMixin
@@ -10,5 +11,6 @@ __all__ = (
     "BrokerTelemetryMixin",
     "Message",
     "MessageEntry",
+    "QueueCapacityError",
     "RedisBroker",
 )

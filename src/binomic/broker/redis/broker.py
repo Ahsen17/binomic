@@ -7,6 +7,7 @@ import structlog
 from redis.asyncio import BlockingConnectionPool, Redis
 from redis.exceptions import ResponseError
 
+from binomic.broker.exceptions import QueueCapacityError
 from binomic.broker.message import MessageEntry
 from binomic.broker.protocols import (
     Broker,
@@ -57,6 +58,10 @@ class RedisBroker(Broker, BrokerLifecycleMixin, BrokerTelemetryMixin):
     the consumer group name. Payloads live in a per-queue hash while stream
     entries carry only the message id; dead messages land in ``:dlq:stream``
     plus ``:dlq:hash``.
+    ``capacity`` caps every queue's unacknowledged total (the stream length);
+    unlimited by default. It stays an explicit constructor parameter, kept
+    out of ``**config``: everything there feeds the Redis connection pool, so
+    the broker's own options do not compete for that namespace.
     """
 
     def __init__(
@@ -64,12 +69,19 @@ class RedisBroker(Broker, BrokerLifecycleMixin, BrokerTelemetryMixin):
         dsn: str,
         queues: Sequence[str],
         namespace: str,
+        capacity: int | None = None,
         **config: Any,
     ) -> None:
+
+        if capacity is not None and capacity < 0:
+            raise ValueError(
+                f"`capacity` must be None or a non-negative integer, got {capacity}"
+            )
 
         self._dsn = dsn
         self._queues = queues
         self._group = namespace
+        self._capacity = capacity
         self._config = config or {}
 
         if "decode_responses" not in self._config:
@@ -161,7 +173,28 @@ class RedisBroker(Broker, BrokerLifecycleMixin, BrokerTelemetryMixin):
             )
         )
 
-        if not resp.ok:
+        if resp.status == "rejected":
+            detail = resp.result if isinstance(resp.result, dict) else None
+
+            if detail is None or "current" not in detail or "capacity" not in detail:
+                # A rejection without its detail is a broken envelope: treat
+                # it as an internal failure rather than fabricating numbers.
+                logger.warning(
+                    "Rejected envelope without detail",
+                    script=script,
+                    keys=keys,
+                    args=args,
+                    result=resp.result,
+                )
+
+                return None
+
+            raise QueueCapacityError(
+                current=cast("int", detail["current"]),
+                capacity=cast("int", detail["capacity"]),
+            )
+
+        if resp.status == "error":
             logger.warning(
                 "Failed to invoke script",
                 script=script,
@@ -207,6 +240,12 @@ class RedisBroker(Broker, BrokerLifecycleMixin, BrokerTelemetryMixin):
         message: "Message",
         context: "Mapping[str, str] | None" = None,
     ) -> "MessageEntry | None":
+        """Enqueue a message, raising on a full queue.
+
+        Raises ``QueueCapacityError`` when the queue's unacknowledged total
+        has reached its effective capacity; internal script failures keep
+        degrading to ``None``.
+        """
 
         resp = await self._invoke_script(
             script="enqueue",
@@ -217,6 +256,8 @@ class RedisBroker(Broker, BrokerLifecycleMixin, BrokerTelemetryMixin):
                 message.to_json(),
                 time.time(),
                 msgspec.json.encode(dict(context)) if context else b"",
+                # Empty string encodes "unlimited" for the Lua capacity check.
+                "" if self._capacity is None else self._capacity,
             ],
         )
 

@@ -41,6 +41,38 @@ backoff is currently fixed; if you need a different rhythm, wait inside the
 task function itself.
 ```
 
+## The capacity limit
+
+`BinomicConfig.capacity` caps **every queue's** unacknowledged total (`None`
+means unlimited and is the default; `0` rejects every new submission). The
+unacknowledged total is the queue stream's length `XLEN`: a message stays in
+the stream from enqueue until ack/dead/retry/reclaim removes it, so
+**in-flight** messages — taken by a consumer but not yet acknowledged — count
+as well.
+
+The check and the write run atomically inside one Lua script: at the limit the
+`enqueue` writes nothing and answers with a rejection, which the broker raises
+as `QueueCapacityError` (carrying the depth and the limit observed at
+rejection). The two submission paths behave differently:
+
+- `direct`: `submit` lets `QueueCapacityError` propagate to the caller, who
+  decides between retrying and giving up;
+- `delay` / `cron` / `interval`: delivery happens inside a scheduler job with
+  no channel back to a caller — a rejection is logged as a warning, counted
+  (`binomic.task.rejections`, gated by `otel_enabled`) and that delivery is
+  dropped; a periodic task simply comes back next round, while a delayed
+  message is lost (consistent with the adjudication that delayed jobs are
+  non-durable).
+
+Retry and reclaim re-entries keep the depth constant (each script adds the new
+entry before removing the old one), so system-recovery paths never consume
+capacity and are never rejected for it. With several instances sharing one
+Redis database the count is global across them.
+
+Note: do not bypass binomic and run `XADD` / `XDEL` / `XTRIM` against the
+stream directly — the first skips the capacity check, the others release or
+cut the depth and defeat the limit.
+
 ## Timeout and staleness (straight to the DLQ)
 
 `task_timeout` bites in two places, both meaning "total delivery deadline":

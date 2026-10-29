@@ -1,7 +1,7 @@
 """OpenTelemetry integration for binomic.
 
 A standalone module so the optional dependency and every trace/metric
-gateway live behind one boundary: core code imports ``binomic.otel`` and
+wrapper live behind one boundary: core code imports ``binomic.otel`` and
 never touches ``opentelemetry`` directly.
 """
 
@@ -14,6 +14,7 @@ from .telemetry import (
     MESSAGING_SYSTEM,
     MESSAGING_SYSTEM_VALUE,
     QUEUE_NAME,
+    RESTART_REASON,
     TASK_ATTEMPT,
     TASK_NAME,
     WORKER_CONSUMER,
@@ -38,6 +39,7 @@ __all__ = (
     "MESSAGING_SYSTEM",
     "MESSAGING_SYSTEM_VALUE",
     "QUEUE_NAME",
+    "RESTART_REASON",
     "TASK_ATTEMPT",
     "TASK_NAME",
     "WORKER_CONSUMER",

@@ -116,6 +116,7 @@ def make_broker(
     def _make(
         queues: list[str],
         namespace: str = "binomic",
+        capacity: int | None = None,
         **config: Any,
     ) -> RedisBroker:
 
@@ -134,6 +135,7 @@ def make_broker(
             dsn="redis://localhost:6379/0",
             queues=queues,
             namespace=namespace,
+            capacity=capacity,
             **config,
         )
 

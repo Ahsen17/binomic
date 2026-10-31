@@ -1,0 +1,147 @@
+name: binomic-ha-sentinel
+
+# Sentinel topology for the binomic HA compatibility suites (1 primary,
+# 2 replicas, 3 sentinels). Host networking keeps the address the sentinels
+# hand out (127.0.0.1:6380) directly reachable from the host test process;
+# every port is offset from the service defaults on purpose.
+
+services:
+  redis-master:
+    image: redis:7.4-alpine
+    network_mode: host
+    command: ["redis-server", "--port", "6380", "--save", ""]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p 6380 ping | grep -q PONG"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  redis-replica-1:
+    image: redis:7.4-alpine
+    network_mode: host
+    command:
+      ["redis-server", "--port", "6381", "--replicaof", "127.0.0.1", "6380", "--save", ""]
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "redis-cli -p 6381 ping | grep -q PONG && redis-cli -p 6381 info replication | grep -q master_link_status:up",
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  redis-replica-2:
+    image: redis:7.4-alpine
+    network_mode: host
+    command:
+      ["redis-server", "--port", "6382", "--replicaof", "127.0.0.1", "6380", "--save", ""]
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "redis-cli -p 6382 ping | grep -q PONG && redis-cli -p 6382 info replication | grep -q master_link_status:up",
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # The sentinel config is generated at startup into the container's /tmp so
+  # it is always writable: sentinel rewrites its own config file, and a
+  # read-only mount breaks that. resolve-hostnames is enabled per the
+  # verification contract even though the monitor target is numeric.
+  sentinel-1:
+    image: redis:7.4-alpine
+    network_mode: host
+    depends_on:
+      redis-master:
+        condition: service_healthy
+      redis-replica-1:
+        condition: service_healthy
+      redis-replica-2:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        printf '%s\n' \
+          'port 26380' \
+          'sentinel resolve-hostnames yes' \
+          'sentinel monitor binomic 127.0.0.1 6380 2' \
+          'sentinel down-after-milliseconds binomic 2000' \
+          'sentinel failover-timeout binomic 10000' \
+          > /tmp/sentinel.conf
+        exec redis-server /tmp/sentinel.conf --sentinel
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "redis-cli -p 26380 sentinel get-master-addr-by-name binomic | grep -q 6380",
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  sentinel-2:
+    image: redis:7.4-alpine
+    network_mode: host
+    depends_on:
+      redis-master:
+        condition: service_healthy
+      redis-replica-1:
+        condition: service_healthy
+      redis-replica-2:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        printf '%s\n' \
+          'port 26381' \
+          'sentinel resolve-hostnames yes' \
+          'sentinel monitor binomic 127.0.0.1 6380 2' \
+          'sentinel down-after-milliseconds binomic 2000' \
+          'sentinel failover-timeout binomic 10000' \
+          > /tmp/sentinel.conf
+        exec redis-server /tmp/sentinel.conf --sentinel
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "redis-cli -p 26381 sentinel get-master-addr-by-name binomic | grep -q 6380",
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  sentinel-3:
+    image: redis:7.4-alpine
+    network_mode: host
+    depends_on:
+      redis-master:
+        condition: service_healthy
+      redis-replica-1:
+        condition: service_healthy
+      redis-replica-2:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        printf '%s\n' \
+          'port 26382' \
+          'sentinel resolve-hostnames yes' \
+          'sentinel monitor binomic 127.0.0.1 6380 2' \
+          'sentinel down-after-milliseconds binomic 2000' \
+          'sentinel failover-timeout binomic 10000' \
+          > /tmp/sentinel.conf
+        exec redis-server /tmp/sentinel.conf --sentinel
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "redis-cli -p 26382 sentinel get-master-addr-by-name binomic | grep -q 6380",
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 30

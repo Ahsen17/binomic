@@ -239,10 +239,16 @@ checked box means done. For what has landed, see
 - [x] **P1 · Dead-letter queue** -- timed-out, stale and exhausted messages
   land in the DLQ (`{namespace}:{queue}:dlq:stream` + `:dlq:hash`), inspectable
   and replayable
-- [ ] **P2 · Redis HA compatibility** -- verify that the six Lua scripts and
-  consumer-group semantics hold under Sentinel/Cluster topologies
 - [ ] **P2 · Large-scale stability testing** -- soak tests across multiple
   instances, Redis flaps and network partitions
+- [x] **P2 · Redis HA compatibility** -- verified the eight broker scripts
+  (6 operations + observe/context) and consumer-group semantics under
+  Sentinel/Cluster: Sentinel is usable (data-plane semantics equivalent to a
+  standalone Redis, connection brought by the caller), Cluster is structurally
+  unsupported (keyless script routing, multi-key scripts across slots,
+  client-rejected multi-queue `XREADGROUP`). Verification assets live in
+  `assets/` and `test_integration/ha/` (`pytest -m ha`); conclusions in the
+  reliability guide
 - [x] **P2 · Producer-side capacity limit** -- `BinomicConfig.capacity` caps
   every queue's unacknowledged total (the stream length); submissions onto a
   full queue are rejected immediately: `direct` raises `QueueCapacityError`,

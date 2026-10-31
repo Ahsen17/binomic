@@ -2,8 +2,9 @@
 
 A message that has been sent out can fail, overrun its timeout, or go
 stranded. This page covers how Binomic handles each case: **retrying a
-failure**, **timeouts and staleness**, and the **dead letter queue (DLQ)**.
-See [Architecture](architecture.md) for where they sit in the pipeline.
+failure**, **timeouts and staleness**, the **dead letter queue (DLQ)**, and
+**Redis HA topology compatibility**. See [Architecture](architecture.md) for
+where they sit in the pipeline.
 
 ## Attempts and the deadline
 
@@ -176,3 +177,72 @@ messages for good.
 Payload integrity is guarded at the broker: `acquire` / `reclaim` clean up
 entries whose body cannot be read (`XACK` + `XDEL`); such corruption does not
 count as an attempt.
+
+## Redis HA topology compatibility
+
+`RedisBroker` targets a **directly-connected, single-instance** Redis. Below
+are the conclusions of the Sentinel / Cluster compatibility verification
+(2026-10, measured against real topologies; see the assets note at the end).
+
+### Sentinel: usable (you bring the connection)
+
+Data-plane semantics are fully equivalent to a standalone Redis: all 8 broker
+scripts and the consumer-group semantics passed against the Sentinel-resolved
+primary. The framework ships no Sentinel wiring; resolve the primary with
+redis-py's `Sentinel` and inject it:
+
+```python
+from redis.asyncio import Redis
+from redis.asyncio.sentinel import Sentinel
+
+from binomic.broker import RedisBroker
+
+sentinel = Sentinel([("127.0.0.1", 26380), ("127.0.0.1", 26381), ("127.0.0.1", 26382)])
+
+
+class SentinelBroker(RedisBroker):
+    """Wire the broker to the primary resolved by Sentinel."""
+
+    def _ensure_client(self) -> Redis:
+        if self._client is None:
+            self._client = sentinel.master_for("mymaster", decode_responses=True)
+        return self._client
+
+
+broker = SentinelBroker(
+    dsn="redis://localhost:6379/0", queues=["default"], namespace="binomic"
+)
+```
+
+This relies on the private `_ensure_client` seam (the same seam the
+verification suite uses). It is a documented compatibility path, not a
+supported API — a framework upgrade may require adjusting the subclass.
+
+### Cluster: not supported
+
+All three structural conflicts were reproduced against a real 3-primary /
+3-replica cluster (Redis 7.4):
+
+1. Broker scripts are invoked **keylessly** (`keys=[]`) and build key names
+   from ARGV, so each invocation is routed to an arbitrary primary; touching
+   a key that lives elsewhere fails with
+   `Script attempted to access a non local key ...`. Single-key scripts
+   succeed only about one third of the time — the nondeterminism itself is
+   the incompatibility.
+2. Most scripts touch several keys in one call (stream, hash, the DLQ pair,
+   context); these keys carry no hash tags and land on different slots.
+3. The multi-queue `XREADGROUP` inside `acquire` is rejected by the client:
+   `XREADGROUP - all keys must map to the same key slot`.
+
+None of these can be worked around from the outside — gathering the keys
+under hash tags is a framework-level redesign of the key layout. For Cluster
+requirements, use a standalone or Sentinel deployment, or wait for framework
+support.
+
+### The verification assets
+
+`assets/sentinel/` and `assets/cluster/` orchestrate both topologies with
+Docker Compose (host networking, ports offset from the defaults; see
+`assets/README.md`); `uv run pytest test_integration/ha -m ha` runs the
+suites, and they skip entirely when the environments are down. Verified
+against Redis 7.4.11 and redis-py 8.1.0.

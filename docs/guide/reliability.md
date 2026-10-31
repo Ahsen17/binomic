@@ -1,8 +1,8 @@
 # 可靠性
 
 一条消息投出去之后可能执行失败、超时或滞留。这一页说明各类情形的处置：
-**失败重试**、**超时与超龄**，以及**死信队列（DLQ）**。它们在链路中的位置见
-[架构](architecture.md)。
+**失败重试**、**超时与超龄**、**死信队列（DLQ）**，以及 **Redis 高可用拓扑的
+兼容性**。它们在链路中的位置见[架构](architecture.md)。
 
 ## 尝试次数与时限
 
@@ -137,3 +137,63 @@ hostname + Master pid 前缀（同主机与跨主机实例均不撞名），实�
 
 payload 的完整性由 broker 层把守：`acquire` / `reclaim` 遇到读不出负载的条目直接
 清理（`XACK` + `XDEL`），这类损坏不计入重投。
+
+## Redis 高可用拓扑兼容性
+
+`RedisBroker` 面向**单机直连**的 Redis。以下是对 Sentinel / Cluster 两种高可用
+拓扑的兼容性验证结论（2026-10，实测于真实拓扑，验证资产见文末）。
+
+### Sentinel：可用（连接由使用方建立）
+
+数据面语义与单机完全等价：8 个 broker 脚本与消费者组语义在 Sentinel 解析出的
+主节点上全部实测通过。框架不内置 Sentinel 连接；使用方以 `redis-py` 的
+`Sentinel` 解析主节点客户端后自行接入：
+
+```python
+from redis.asyncio import Redis
+from redis.asyncio.sentinel import Sentinel
+
+from binomic.broker import RedisBroker
+
+sentinel = Sentinel([("127.0.0.1", 26380), ("127.0.0.1", 26381), ("127.0.0.1", 26382)])
+
+
+class SentinelBroker(RedisBroker):
+    """把 broker 接到 Sentinel 解析出的主节点上。"""
+
+    def _ensure_client(self) -> Redis:
+        if self._client is None:
+            self._client = sentinel.master_for("mymaster", decode_responses=True)
+        return self._client
+
+
+broker = SentinelBroker(
+    dsn="redis://localhost:6379/0", queues=["default"], namespace="binomic"
+)
+```
+
+该写法依赖 `_ensure_client` 这一私有接缝（验证套件使用的正是同一接缝）：它
+是记录在案的兼容路径，而非受支持的 API——框架升级时可能需要相应调整子类。
+
+### Cluster：不支持
+
+以下三条结构性冲突均在真实 3 主 3 从集群（Redis 7.4）上实测复现：
+
+1. broker 脚本以**无 key 形态**（`keys=[]`）调用、key 名在脚本内由 ARGV 拼接，
+   每次调用被路由到任意主节点；访问不在该节点的 key 即失败
+   （`Script attempted to access a non local key ...`）。单 key 脚本也仅有
+   约 1/3 的概率成功——非确定性行为本身就是不兼容。
+2. 多数脚本单次触碰多个 key（stream、hash、DLQ 一对键、context）；这些 key
+   没有 hash tag，在 Cluster 上散落于不同 slot。
+3. `acquire` 一次读取多个队列的 `XREADGROUP` 被客户端直接拒绝
+   （`XREADGROUP - all keys must map to the same key slot`）。
+
+三条均无法在使用方侧绕过——把 key 收拢进 hash tag 属于框架层的 key 布局重
+设计。需要 Cluster 时请改用单机或 Sentinel 部署，或等待框架支持。
+
+### 验证资产
+
+`assets/sentinel/` 与 `assets/cluster/` 以 Docker Compose 编排两套拓扑
+（host 网络、端口避开默认值，见 `assets/README.md`）；`uv run pytest
+test_integration/ha -m ha` 运行验证套件，环境未启动时整体 skip。
+验证基线：Redis 7.4.11、redis-py 8.1.0。

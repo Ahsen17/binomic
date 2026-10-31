@@ -1,0 +1,192 @@
+name: binomic-ha-cluster
+
+# Cluster topology for the binomic HA compatibility suites (3 primaries +
+# 3 replicas on ports 7000-7005, bus ports 17000-17005). Host networking is
+# the Docker arrangement Redis officially recommends for clusters, and it
+# keeps the announced addresses (127.0.0.1) reachable from the host test
+# process. Nodes keep their cluster config in the container's /tmp, so a
+# `compose down` recreates them without stale nodes.conf residue.
+
+services:
+  cluster-node-1:
+    image: redis:7.4-alpine
+    network_mode: host
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        printf '%s\n' \
+          'port 7000' \
+          'cluster-enabled yes' \
+          'cluster-config-file /tmp/nodes.conf' \
+          'cluster-announce-ip 127.0.0.1' \
+          'cluster-announce-port 7000' \
+          'cluster-announce-bus-port 17000' \
+          'save ""' \
+          'appendonly no' \
+          > /tmp/redis.conf
+        exec redis-server /tmp/redis.conf
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p 7000 ping | grep -q PONG"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  cluster-node-2:
+    image: redis:7.4-alpine
+    network_mode: host
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        printf '%s\n' \
+          'port 7001' \
+          'cluster-enabled yes' \
+          'cluster-config-file /tmp/nodes.conf' \
+          'cluster-announce-ip 127.0.0.1' \
+          'cluster-announce-port 7001' \
+          'cluster-announce-bus-port 17001' \
+          'save ""' \
+          'appendonly no' \
+          > /tmp/redis.conf
+        exec redis-server /tmp/redis.conf
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p 7001 ping | grep -q PONG"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  cluster-node-3:
+    image: redis:7.4-alpine
+    network_mode: host
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        printf '%s\n' \
+          'port 7002' \
+          'cluster-enabled yes' \
+          'cluster-config-file /tmp/nodes.conf' \
+          'cluster-announce-ip 127.0.0.1' \
+          'cluster-announce-port 7002' \
+          'cluster-announce-bus-port 17002' \
+          'save ""' \
+          'appendonly no' \
+          > /tmp/redis.conf
+        exec redis-server /tmp/redis.conf
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p 7002 ping | grep -q PONG"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  cluster-node-4:
+    image: redis:7.4-alpine
+    network_mode: host
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        printf '%s\n' \
+          'port 7003' \
+          'cluster-enabled yes' \
+          'cluster-config-file /tmp/nodes.conf' \
+          'cluster-announce-ip 127.0.0.1' \
+          'cluster-announce-port 7003' \
+          'cluster-announce-bus-port 17003' \
+          'save ""' \
+          'appendonly no' \
+          > /tmp/redis.conf
+        exec redis-server /tmp/redis.conf
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p 7003 ping | grep -q PONG"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  cluster-node-5:
+    image: redis:7.4-alpine
+    network_mode: host
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        printf '%s\n' \
+          'port 7004' \
+          'cluster-enabled yes' \
+          'cluster-config-file /tmp/nodes.conf' \
+          'cluster-announce-ip 127.0.0.1' \
+          'cluster-announce-port 7004' \
+          'cluster-announce-bus-port 17004' \
+          'save ""' \
+          'appendonly no' \
+          > /tmp/redis.conf
+        exec redis-server /tmp/redis.conf
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p 7004 ping | grep -q PONG"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  cluster-node-6:
+    image: redis:7.4-alpine
+    network_mode: host
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        printf '%s\n' \
+          'port 7005' \
+          'cluster-enabled yes' \
+          'cluster-config-file /tmp/nodes.conf' \
+          'cluster-announce-ip 127.0.0.1' \
+          'cluster-announce-port 7005' \
+          'cluster-announce-bus-port 17005' \
+          'save ""' \
+          'appendonly no' \
+          > /tmp/redis.conf
+        exec redis-server /tmp/redis.conf
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p 7005 ping | grep -q PONG"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # One-shot cluster creation: waits until every node answers PING, then lets
+  # Redis assign one replica to each primary. Exits 0 on success; the exit
+  # code is the health signal the assets/README.md checks.
+  cluster-init:
+    image: redis:7.4-alpine
+    network_mode: host
+    restart: "no"
+    depends_on:
+      cluster-node-1:
+        condition: service_healthy
+      cluster-node-2:
+        condition: service_healthy
+      cluster-node-3:
+        condition: service_healthy
+      cluster-node-4:
+        condition: service_healthy
+      cluster-node-5:
+        condition: service_healthy
+      cluster-node-6:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        i=0
+        while [ $$i -lt 60 ]; do
+          ok=1
+          for p in 7000 7001 7002 7003 7004 7005; do
+            redis-cli -p $$p ping >/dev/null 2>&1 || ok=0
+          done
+          [ $$ok -eq 1 ] && break
+          i=$$((i + 1))
+          sleep 1
+        done
+        exec redis-cli --cluster create \
+          127.0.0.1:7000 127.0.0.1:7001 127.0.0.1:7002 \
+          127.0.0.1:7003 127.0.0.1:7004 127.0.0.1:7005 \
+          --cluster-replicas 1 --cluster-yes

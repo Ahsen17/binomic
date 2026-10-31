@@ -200,9 +200,12 @@ flowchart TD
   进 context 时映射进 `WorkerPolicy`
 - [x] **P1 · 死信队列** —— 超时、超龄与超出 `max_attempts` 的消息进入 DLQ
   （`{namespace}:{queue}:dlq:stream` + `:dlq:hash`），可检查、可重放
-- [ ] **P2 · Redis HA 兼容验证** —— Sentinel/Cluster 拓扑下六个 Lua 脚本与
-  consumer group 语义的兼容性验证
 - [ ] **P2 · 大规模稳定性验证** —— 多实例、Redis 抖动与网络分区下的长稳测试
+- [x] **P2 · Redis HA 兼容验证** —— 八个 broker 脚本（6 操作 + observe/context）
+  与 consumer group 语义的兼容性验证：Sentinel 可用（数据面语义与单机等价，
+  连接由使用方建立），Cluster 结构性不支持（`keys=[]` 随机路由、单脚本多 key
+  跨 slot、多队列 `XREADGROUP` 被客户端拒绝）。验证资产在 `assets/` 与
+  `test_integration/ha/`（`pytest -m ha`），结论详见可靠性指南
 - [x] **P2 · 投递侧容量上限** —— `BinomicConfig.capacity` 为所有队列的未确认总数
   （stream 长度）设置统一上限，达到上限的新提交立即拒绝：`direct` 路径抛
   `QueueCapacityError`，调度路径记录日志与拒绝计数后放弃本轮；检查与入队同脚本

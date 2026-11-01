@@ -20,6 +20,7 @@ class TestWorkerPolicy:
         assert policy.poll_interval == 0.1
         assert policy.heartbeat_interval == 5.0
         assert policy.reclaim_interval == 30.0
+        assert policy.dlq_retention == 7 * 86400.0
 
 
 class TestMasterPolicy:

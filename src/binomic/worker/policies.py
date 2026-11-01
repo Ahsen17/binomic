@@ -28,6 +28,8 @@ class WorkerPolicy(BaseStruct):
     heartbeat_interval: float = 5.0
     reclaim_interval: float = 30.0
 
+    dlq_retention: float | None = 7 * 86400.0
+
     worker_init: Callable[[], None] | None = None
     otel_enabled: bool = False
 

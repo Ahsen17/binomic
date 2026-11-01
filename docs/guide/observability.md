@@ -199,7 +199,7 @@ Binomic 与应用自身的日志。级别约定：逐消息事件（提交、执
 ## 自定义 broker
 
 trace 上下文的传递与队列观测是**可选能力**。自定义 broker 只需实现
-`BrokerTelemetryMixin` 的两个方法即可接入（`trace_context` 与 `observe`，不要求
+`BrokerTelemetryCapability` 的两个方法即可接入（`trace_context` 与 `observe`，不要求
 Lua）：把上下文随消息存进中间件自己的元数据区（例如 AMQP/Kafka 的 message
 headers），执行时按消息 ID 取回即可。
 

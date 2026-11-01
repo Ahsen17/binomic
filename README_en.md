@@ -32,8 +32,9 @@ the fleet and reclaims work from dead consumers. Message payloads are serialized
 - **Retries and dead-letter queue**: failed messages are redelivered after a
   backoff (1.5 seconds, doubling, capped at 30) up to `max_attempts`
   (3 by default); timed-out, stale and exhausted messages land in a dead
-  letter queue (DLQ) that can be inspected and replayed, and observed
-  through an `on_dead` hook
+  letter queue (DLQ) that can be inspected, replayed and auto-pruned under a
+  retention policy (7 days by default), and observed through an `on_dead`
+  hook
 - **Multiprocess workers**: the master spawns worker subprocesses via
   multiprocessing and supervises them with a presence heartbeat
 - **Observability (optional)**: unified structlog logging, plus optional
@@ -228,11 +229,19 @@ checked box means done. For what has landed, see
 - [x] **P0 · Bounded storage** -- ack/dead/reclaim `XDEL` terminal entries;
   radix-tree nodes are released once fully deleted, so live queues are a
   sliding window that does not grow with history (verified empirically). The
-  DLQ is deliberately never auto-pruned (audit/replay surface); iterate on a
-  retention policy only if it is ever needed
-- [ ] **P1 · DLQ operations tooling** -- standardized entry points for replay,
-  inspection and retention policy; the data plane is in place (the DLQ is
-  deliberately never auto-pruned), the management plane is missing
+  DLQ retention policy has since landed with the operations tooling
+  (`dlq_retention`, 7 days by default, disableable)
+- [x] **P1 · DLQ operations tooling** -- a standardized management surface for
+  replay, inspection and retention: `await client.dead_letters(queue)` returns
+  a queue-bound `DeadLetters` operations handle (depth / list / read / replay /
+  prune; custom brokers are probed via `BrokerDlqCapability`); replays redeliver
+  to the original queue as brand-new messages (fresh UUID, `attempt` reset to 1,
+  source record kept); the retention field `dlq_retention` (7 days by default,
+  `None` disables) drives the worker's periodic pruning of expired records
+  (the automatic sweep is the default; the handle's `prune(retention)` is the
+  explicit trigger over the same primitive). **Behavior change**: the DLQ went
+  from "deliberately never auto-pruned" to a 7-day default. See the
+  reliability guide
 - [x] **P1 · Configuration** -- `task_timeout` / `heartbeat_interval` /
   `reclaim_interval` / `read_count` / `poll_interval` are now `BinomicConfig`
   fields, mapped into the `WorkerPolicy` on context entry
@@ -248,7 +257,8 @@ checked box means done. For what has landed, see
   unsupported (keyless script routing, multi-key scripts across slots,
   client-rejected multi-queue `XREADGROUP`). Verification assets live in
   `assets/` and `test_integration/ha/` (`pytest -m ha`); conclusions in the
-  reliability guide
+  reliability guide. The `dlq_prune` script added afterwards is of the same
+  shape (one multi-key script), so the Cluster constraints are unchanged
 - [x] **P2 · Producer-side capacity limit** -- `BinomicConfig.capacity` caps
   every queue's unacknowledged total (the stream length); submissions onto a
   full queue are rejected immediately: `direct` raises `QueueCapacityError`,
@@ -270,7 +280,7 @@ checked box means done. For what has landed, see
   processes, plus execution duration, delivery lag, phase counters, queue
   depth and in-flight tasks. `BinomicConfig.otel_enabled` turns it on; SDK
   assembly and export stay with the application. Custom brokers that skip
-  `BrokerTelemetryMixin` degrade to root spans and no queue gauges
+  `BrokerTelemetryCapability` degrade to root spans and no queue gauges
 
 ## Development
 

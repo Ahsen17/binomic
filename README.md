@@ -28,7 +28,7 @@ Binomic 是一个自定义异步任务框架：以装饰器声明任务，以 Re
   `xautoclaim` 回收失联消费者的消息
 - **失败重试与死信队列**：失败的消息按退避（1.5 秒起、逐次翻倍、封顶 30 秒）在
   `max_attempts`（默认 3）之内重投；超时、超龄与耗尽次数的消息进入死信队列（DLQ），
-  可检查、可重放，并支持 `on_dead` 死信通知钩子
+  可检查、可重放、按保留策略自动清理（默认 7 天），并支持 `on_dead` 死信通知钩子
 - **多进程 Worker**：Master 以 multiprocessing 启动多个 Worker 子进程，并携
   presence 心跳持续监督
 - **可观测性（可选）**：统一 structlog 日志；安装 `binomic[otel]` 后可产生
@@ -191,10 +191,15 @@ flowchart TD
   [调度文档](docs/guide/scheduling.md)）；跨重启的延时投递在出现真实使用场景前不建设，
   届时按 Redis 侧排队立项
 - [x] **P0 · 存储有界** —— ack/dead/reclaim 对终态条目做 `XDEL` 清理；radix 树节点在
-  整节点删空后即释放，主队列实为滑动窗口、不随历史增长（已实测验证）。DLQ 有意不自动
-  清理（审计/重放面），保留策略如需再另行迭代
-- [ ] **P1 · DLQ 运维工具链** —— 回放、检查与保留策略的标准化入口；数据面已备
-  （DLQ 有意不自动清理），缺管理面
+  整节点删空后即释放，主队列实为滑动窗口、不随历史增长（已实测验证）。DLQ 的保留
+  策略已随运维工具链落地（`dlq_retention`，默认 7 天，可关闭）
+- [x] **P1 · DLQ 运维工具链** —— 回放、检查与保留策略的标准化管理面：
+  `await client.dead_letters(queue)` 返回绑定队列的 `DeadLetters` 操作句柄
+  （depth / list / read / replay / prune，自定义 broker 经 `BrokerDlqCapability`
+  探测）；重放以全新消息回原队列（新 UUID、`attempt` 重置 1、源记录保留）；
+  保留策略 `dlq_retention`（默认 7 天、`None` 关闭）由 worker 周期清理超期记录
+  （自动清理为默认机制，句柄的 `prune(retention)` 是同一原语的显式触发口径）。
+  **行为变更**：DLQ 由「有意不自动清理」改为默认 7 天自动清理。详见可靠性指南
 - [x] **P1 · 配置开放** —— `task_timeout` / `heartbeat_interval` /
   `reclaim_interval` / `read_count` / `poll_interval` 已提升为 `BinomicConfig` 字段，
   进 context 时映射进 `WorkerPolicy`
@@ -205,7 +210,8 @@ flowchart TD
   与 consumer group 语义的兼容性验证：Sentinel 可用（数据面语义与单机等价，
   连接由使用方建立），Cluster 结构性不支持（`keys=[]` 随机路由、单脚本多 key
   跨 slot、多队列 `XREADGROUP` 被客户端拒绝）。验证资产在 `assets/` 与
-  `test_integration/ha/`（`pytest -m ha`），结论详见可靠性指南
+  `test_integration/ha/`（`pytest -m ha`），结论详见可靠性指南；其后新增的
+  `dlq_prune` 脚本同构（单脚本多 key），Cluster 约束不变
 - [x] **P2 · 投递侧容量上限** —— `BinomicConfig.capacity` 为所有队列的未确认总数
   （stream 长度）设置统一上限，达到上限的新提交立即拒绝：`direct` 路径抛
   `QueueCapacityError`，调度路径记录日志与拒绝计数后放弃本轮；检查与入队同脚本
@@ -220,7 +226,7 @@ flowchart TD
   生命周期）；可选 `binomic[otel]` 提供 traces 与 metrics：producer/consumer span
   跨进程关联，执行耗时、投递滞留、阶段计数、队列深度与在途任务等指标，由
   `BinomicConfig.otel_enabled` 开启。SDK 装配与导出归调用方；自定义 broker 不实现
-  `BrokerTelemetryMixin` 时自动降级为 root span/无队列 gauge
+  `BrokerTelemetryCapability` 时自动降级为 root span/无队列 gauge
 
 ## 开发
 

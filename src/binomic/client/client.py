@@ -7,12 +7,14 @@ import structlog
 from anyio import AsyncContextManagerMixin
 
 from binomic.broker import (
+    BrokerDlqCapability,
     BrokerFactory,
-    BrokerLifecycleMixin,
-    BrokerTelemetryMixin,
+    BrokerLifecycleCapability,
+    BrokerTelemetryCapability,
     Message,
     QueueCapacityError,
 )
+from binomic.client.dlq import DeadLetters
 from binomic.otel import (
     MESSAGING_DESTINATION_NAME,
     MESSAGING_MESSAGE_ID,
@@ -57,6 +59,9 @@ class Binomic(AsyncContextManagerMixin):
     private registry. ``start``/``close`` manage the broker and the scheduler;
     the async context manager additionally assembles the ``Master``, registers
     cron/interval tasks and tears everything down on exit.
+    ``dead_letters`` resolves the broker and returns a per-queue operations
+    handle over its dead-letter surface (inspect and replay) when the broker
+    implements the capability.
     """
 
     def __init__(
@@ -107,7 +112,7 @@ class Binomic(AsyncContextManagerMixin):
                 **self._broker_kwargs,
             ).create()
 
-            if isinstance(self._broker, BrokerLifecycleMixin):
+            if isinstance(self._broker, BrokerLifecycleCapability):
                 await self._broker.start()
 
         return self._broker
@@ -132,7 +137,7 @@ class Binomic(AsyncContextManagerMixin):
         closed = False
 
         if self._broker is not None:
-            if isinstance(self._broker, BrokerLifecycleMixin):
+            if isinstance(self._broker, BrokerLifecycleCapability):
                 await self._broker.close()
             self._broker = None
             closed = True
@@ -174,7 +179,7 @@ class Binomic(AsyncContextManagerMixin):
 
         broker = await self._ensure_broker()
 
-        if carrier and isinstance(broker, BrokerTelemetryMixin):
+        if carrier and isinstance(broker, BrokerTelemetryCapability):
             await broker.enqueue(
                 queue=queue,
                 message=message,
@@ -318,6 +323,25 @@ class Binomic(AsyncContextManagerMixin):
                 attributes={TASK_NAME: message.task},
             )
 
+    async def dead_letters(self, queue: str) -> "DeadLetters":
+        """Resolve the broker and return its dead-letter operations handle.
+
+        Client-side resolution: lazily creates and starts the broker, probes
+        the DLQ capability, then hands the narrowed broker to a ``DeadLetters``
+        handle bound to ``queue`` (inspect, replay, and on-demand pruning;
+        the worker's retention sweep is the automatic default).
+        """
+
+        broker = await self._ensure_broker()
+
+        if not isinstance(broker, BrokerDlqCapability):
+            raise NotImplementedError(
+                f"Broker {type(broker).__name__} does not implement "
+                "BrokerDlqCapability; dead-letter management is unavailable"
+            )
+
+        return DeadLetters(broker, queue)
+
     async def _register_interval_cron_tasks(self) -> None:
 
         scheduler = self._ensure_scheduler()
@@ -378,6 +402,7 @@ class Binomic(AsyncContextManagerMixin):
                     poll_interval=self._config.poll_interval,
                     heartbeat_interval=self._config.heartbeat_interval,
                     reclaim_interval=self._config.reclaim_interval,
+                    dlq_retention=self._config.dlq_retention,
                     worker_init=self._config.worker_init,
                     otel_enabled=self._config.otel_enabled,
                 ),

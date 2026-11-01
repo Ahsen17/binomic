@@ -44,3 +44,20 @@ class TestBinomicConfig:
     def test_is_base_struct(self) -> None:
 
         assert issubclass(BinomicConfig, BaseStruct)
+
+    def test_dlq_retention_defaults_to_seven_days(self) -> None:
+
+        assert BinomicConfig(queues=["default"]).dlq_retention == 7 * 86400.0
+
+    def test_accepts_dlq_retention_overrides(self) -> None:
+
+        assert BinomicConfig(queues=["default"], dlq_retention=60.0).dlq_retention == 60.0
+        assert BinomicConfig(queues=["default"], dlq_retention=None).dlq_retention is None
+
+    def test_rejects_non_positive_dlq_retention(self) -> None:
+
+        with pytest.raises(ValueError, match="dlq_retention"):
+            BinomicConfig(queues=["default"], dlq_retention=0)
+
+        with pytest.raises(ValueError, match="dlq_retention"):
+            BinomicConfig(queues=["default"], dlq_retention=-1.0)

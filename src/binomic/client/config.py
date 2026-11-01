@@ -21,6 +21,9 @@ class BinomicConfig(BaseStruct):
     submissions onto a full queue are rejected immediately; unlimited by
     default. Retry and reclaim re-entries keep the total constant and never
     consume capacity.
+    ``dlq_retention`` is how long a record may sit in a queue's dead-letter
+    queue before the worker's periodic sweep deletes it; ``None`` disables
+    the sweep and keeps DLQ records forever.
     ``worker_init`` runs once per worker subprocess before its event loop
     starts (the hook for installing OpenTelemetry SDK providers), and
     ``otel_enabled`` gates all telemetry — with the default ``False`` binomic
@@ -41,6 +44,8 @@ class BinomicConfig(BaseStruct):
     heartbeat_interval: float = 5.0
     reclaim_interval: float = 30.0
 
+    dlq_retention: float | None = 7 * 86400.0
+
     capacity: int | None = None
 
     worker_init: Callable[[], None] | None = None
@@ -51,4 +56,10 @@ class BinomicConfig(BaseStruct):
         if self.capacity is not None and self.capacity < 0:
             raise ValueError(
                 f"`capacity` must be None or a non-negative integer, got {self.capacity}",
+            )
+
+        if self.dlq_retention is not None and self.dlq_retention <= 0:
+            raise ValueError(
+                f"`dlq_retention` must be None or a positive number, "
+                f"got {self.dlq_retention}",
             )

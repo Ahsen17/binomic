@@ -108,7 +108,7 @@ periodic sweep (see "Retention") is the automatic default; the handle's
 `prune` is the explicit trigger over the same primitive:
 
 | Handle method | Delegates to | Behavior |
-|-|-|
+|-|-|-|
 | `dead_letters.depth()` | `dlq_depth(queue)` | How many dead letters the queue currently holds |
 | `dead_letters.list(limit=50, cursor=None)` | `dlq_list(...)` | Pages oldest-first, returning `(records, next_cursor)`; the cursor is an exclusive bound, so pages never repeat or skip |
 | `dead_letters.read(entry_id)` | `dlq_read(...)` | One full record by stream entry id, or `None` |

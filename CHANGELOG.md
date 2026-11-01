@@ -1,3 +1,22 @@
+## [0.3.1] - 2026-10-29
+
+### 🚀 Features
+
+- Otel-instrument the master supervision plane
+- Add enqueue-side queue capacity limit
+
+### 📚 Documentation
+
+- Update changelog
+- Update changelog
+- Adjudicate delayed-job persistence as non-durable
+- Replace compressed metaphors with plain wording
+- Adjudicate delivery-side rate limiting as technical debt
+
+### ⚙️ Miscellaneous Tasks
+
+- Upgrade dependencies
+- Update to v0.3.1
 ## [0.3.0] - 2026-10-19
 
 ### 🚀 Features

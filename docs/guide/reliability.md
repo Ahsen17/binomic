@@ -83,7 +83,7 @@ worker 的周期清理（见「保留策略」）是自动默认，句柄的 `pr
 的显式触发口径：
 
 | 句柄方法 | 委托 | 行为 |
-|-|-|
+|-|-|-|
 | `dead_letters.depth()` | `dlq_depth(queue)` | DLQ 当前记录条数 |
 | `dead_letters.list(limit=50, cursor=None)` | `dlq_list(...)` | 按进入顺序分页，返回 `(记录列表, 下一页游标)`；游标是排他边界，翻页不重不漏 |
 | `dead_letters.read(entry_id)` | `dlq_read(...)` | 按条目 id 读取单条完整记录，不存在返回 `None` |
@@ -148,7 +148,7 @@ async def charge() -> None: ...
 
 钩子契约：
 
-- 以 `fn(entry, reason, exc)` **位置参数**调用：`entry` 是消费侧封套 `MessageEntry`
+- 以 `fn(entry, reason, exc)` **位置参数**调用：`entry` 是消费侧包装 `MessageEntry`
   （队列、stream 条目 id、payload、投递时间戳俱全）；`reason` 是 `"timeout"` /
   `"expired"` / `"max_attempts"` 之一；`exc` 为触发异常——执行超时是 `TimeoutError`
   实例，耗尽次数是任务抛出的原始异常，超龄则是 `None`；

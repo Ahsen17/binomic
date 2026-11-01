@@ -12,7 +12,7 @@ from opentelemetry.trace import SpanKind
 from pytest_mock import MockerFixture
 
 from binomic.broker import Broker, Message, QueueCapacityError, RedisBroker
-from binomic.client import Binomic, BinomicConfig, BinomicFactory
+from binomic.client import Binomic, BinomicConfig, BinomicFactory, DeadLetters
 from binomic.otel import MESSAGING_DESTINATION_NAME, TASK_NAME
 from binomic.task import TaskNotFoundError
 
@@ -208,6 +208,7 @@ class TestContext:
                 poll_interval=0.2,
                 heartbeat_interval=1.5,
                 reclaim_interval=45.0,
+                dlq_retention=60.0,
             )
         )
 
@@ -221,6 +222,7 @@ class TestContext:
         assert policy.poll_interval == 0.2
         assert policy.heartbeat_interval == 1.5
         assert policy.reclaim_interval == 45.0
+        assert policy.dlq_retention == 60.0
 
     async def test_registers_cron_and_interval_jobs(
         self,
@@ -648,3 +650,87 @@ class TestBrokerCapability:
 
         # No context kwarg reached the broker, and the message was delivered.
         assert legacy.calls == [("default", message)]
+
+
+class TestDeadLetters:
+    async def test_handle_delegates_to_a_capable_broker(
+        self,
+        make_client: Callable[..., Binomic],
+    ) -> None:
+        """``dead_letters`` resolves the broker once, hands it to a
+        ``DeadLetters`` handle, and the handle's methods are thin
+        delegation with the queue bound at creation. The stub keeps
+        `dlq_prune` because the structural probe requires the full
+        capability; the handle's `prune` reaches it on demand."""
+
+        class CapableBroker:
+            def __init__(self) -> None:
+
+                self.calls: list[tuple[str, tuple[Any, ...]]] = []
+
+            async def dlq_depth(self, queue: str) -> int:
+
+                self.calls.append(("dlq_depth", (queue,)))
+                return 7
+
+            async def dlq_list(
+                self,
+                queue: str,
+                limit: int = 50,
+                cursor: str | None = None,
+            ) -> "tuple[list[Any], str | None]":
+
+                self.calls.append(("dlq_list", (queue, limit, cursor)))
+                return [], None
+
+            async def dlq_read(self, queue: str, entry_id: str) -> None:
+
+                self.calls.append(("dlq_read", (queue, entry_id)))
+
+            async def dlq_replay(self, queue: str, entry_id: str) -> None:
+
+                self.calls.append(("dlq_replay", (queue, entry_id)))
+
+            async def dlq_prune(self, queue: str, retention: float) -> int:
+
+                self.calls.append(("dlq_prune", (queue, retention)))
+                return 3
+
+        client = make_client()
+        broker = CapableBroker()
+        client._broker = cast("Broker", broker)
+
+        dead_letters = await client.dead_letters("q")
+
+        assert isinstance(dead_letters, DeadLetters)
+
+        assert await dead_letters.depth() == 7
+        assert await dead_letters.list(limit=10, cursor="5-1") == ([], None)
+        assert await dead_letters.read("5-1") is None
+        assert await dead_letters.replay("5-1") is None
+        assert await dead_letters.prune(60.0) == 3
+
+        # The queue is bound at creation; the handle never re-consults the
+        # client, and the client itself carries no dlq_* shortcuts.
+        assert broker.calls == [
+            ("dlq_depth", ("q",)),
+            ("dlq_list", ("q", 10, "5-1")),
+            ("dlq_read", ("q", "5-1")),
+            ("dlq_replay", ("q", "5-1")),
+            ("dlq_prune", ("q", 60.0)),
+        ]
+        assert not any(
+            hasattr(client, name)
+            for name in ("dlq_depth", "dlq_list", "dlq_read", "dlq_replay", "dlq_prune")
+        )
+
+    async def test_handle_refuses_a_broker_without_the_capability(
+        self,
+        make_client: Callable[..., Binomic],
+    ) -> None:
+
+        client = make_client()
+        client._broker = cast("Broker", object())
+
+        with pytest.raises(NotImplementedError, match="BrokerDlqCapability"):
+            await client.dead_letters("default")

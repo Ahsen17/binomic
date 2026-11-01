@@ -229,7 +229,7 @@ events (client, worker and broker start/stop) are `info`; failure paths
 
 Handing the trace context across processes and observing queue depth are
 **optional capabilities**. A custom broker implements the two methods of
-`BrokerTelemetryMixin` (`trace_context` and `observe`, no Lua required): store
+`BrokerTelemetryCapability` (`trace_context` and `observe`, no Lua required): store
 the context in the middleware's own metadata (for example AMQP or Kafka
 message headers) and read it back by message id at execution time.
 

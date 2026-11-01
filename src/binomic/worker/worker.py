@@ -1,13 +1,14 @@
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 import anyio
 import structlog
 
 from binomic.broker import (
+    BrokerDlqCapability,
     BrokerFactory,
-    BrokerLifecycleMixin,
-    BrokerTelemetryMixin,
+    BrokerLifecycleCapability,
+    BrokerTelemetryCapability,
     MessageEntry,
 )
 from binomic.otel import (
@@ -32,6 +33,11 @@ if TYPE_CHECKING:
 
 
 logger = structlog.stdlib.get_logger(__name__)
+
+# How often the worker sweeps DLQ records past `dlq_retention` for deletion.
+# Deletion lands at most one sweep after the retention elapses, which is
+# immaterial at retention scales; the cadence stays an internal constant.
+DLQ_PRUNE_INTERVAL: Final[float] = 60.0
 
 
 class Worker:
@@ -77,7 +83,7 @@ class Worker:
                 **self._broker_kwargs,
             ).create()
 
-            if isinstance(self._broker, BrokerLifecycleMixin):
+            if isinstance(self._broker, BrokerLifecycleCapability):
                 await self._broker.start()
 
         return self._broker
@@ -128,7 +134,7 @@ class Worker:
             self._handler = None
 
         if self._broker is not None:
-            if isinstance(self._broker, BrokerLifecycleMixin):
+            if isinstance(self._broker, BrokerLifecycleCapability):
                 await self._broker.close()
             self._broker = None
 
@@ -175,7 +181,7 @@ class Worker:
 
         broker = await self._ensure_broker()
 
-        if not isinstance(broker, BrokerTelemetryMixin):
+        if not isinstance(broker, BrokerTelemetryCapability):
             return
 
         last_observed = time.monotonic()
@@ -205,6 +211,44 @@ class Worker:
 
             await anyio.sleep(self._policy.poll_interval)
 
+    async def _prune_dlq(self, terminate: "Event") -> None:
+
+        broker = await self._ensure_broker()
+
+        if self._policy.dlq_retention is None:
+            return
+
+        if not isinstance(broker, BrokerDlqCapability):
+            logger.debug(
+                "DLQ pruning unavailable: broker lacks BrokerDlqCapability",
+                consumer=self._consumer,
+            )
+
+            return
+
+        last_pruned = time.monotonic()
+
+        while not terminate.is_set():
+            now = time.monotonic()
+
+            if now - last_pruned >= DLQ_PRUNE_INTERVAL:
+                last_pruned = now
+
+                for queue in self._policy.queues:
+                    pruned = await broker.dlq_prune(
+                        queue,
+                        self._policy.dlq_retention,
+                    )
+
+                    if pruned:
+                        logger.info(
+                            "DLQ records pruned",
+                            queue=queue,
+                            count=pruned,
+                        )
+
+            await anyio.sleep(self._policy.poll_interval)
+
     async def arun(self) -> None:  # noqa: C901
 
         await self.start()
@@ -214,7 +258,7 @@ class Worker:
 
         observable = isinstance(
             await self._ensure_broker(),
-            BrokerTelemetryMixin,
+            BrokerTelemetryCapability,
         )
 
         if self._policy.otel_enabled:
@@ -287,6 +331,7 @@ class Worker:
                 timers.start_soon(self._heartbeat, terminate)
                 timers.start_soon(_poll_messages)
                 timers.start_soon(_poll_reclaims)
+                timers.start_soon(self._prune_dlq, terminate)
 
                 if self._policy.otel_enabled and observable:
                     timers.start_soon(self._observe_queues, terminate)

@@ -1,7 +1,7 @@
 from collections.abc import Callable
 from uuid import UUID
 
-from binomic.broker import Message, MessageEntry
+from binomic.broker import DLQRecordEntry, Message, MessageEntry
 
 
 class TestMessageDefaults:
@@ -113,3 +113,22 @@ class TestMessageEntry:
         )
 
         assert entry.enqueued_at == 1_760_000_000
+
+
+class TestDLQRecordEntry:
+    def test_from_entry_derives_dead_at_from_entry_id(self) -> None:
+
+        entry = MessageEntry(
+            id="1700000000123-5",
+            queue="default",
+            message=Message(task="noop"),
+            enqueued_at=1_760_000_000.5,
+        )
+
+        record = DLQRecordEntry.from_entry(entry)
+
+        assert record.id == "1700000000123-5"
+        assert record.queue == "default"
+        assert record.message is entry.message
+        assert record.enqueued_at == 1_760_000_000.5
+        assert record.dead_at == 1_700_000_000.123

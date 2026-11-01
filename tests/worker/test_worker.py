@@ -249,3 +249,115 @@ class TestQueueGauges:
 
         finally:
             await worker.close()
+
+
+class TestDlqPruning:
+    async def test_disabled_retention_skips_the_sweep(
+        self,
+        fake_broker_backend: None,
+        make_worker: Callable[..., Worker],
+        monkeypatch: Any,
+    ) -> None:
+
+        policy = WorkerPolicy(
+            queues=["default"],
+            concurrency=1,
+            dlq_retention=None,
+        )
+        worker = make_worker(module_name=SAMPLE_MODULE, policy=policy)
+
+        try:
+            await worker.start()
+            broker = await worker._ensure_broker()
+
+            calls: list[str] = []
+
+            async def fake_prune(queue: str, retention: float) -> int:
+
+                calls.append(queue)
+                return 0
+
+            monkeypatch.setattr(broker, "dlq_prune", fake_prune)
+
+            terminate = worker._ensure_terminate()
+
+            with anyio.move_on_after(0.1):
+                await worker._prune_dlq(terminate)
+
+            assert calls == []
+
+        finally:
+            await worker.close()
+
+    async def test_prunes_each_configured_queue_when_due(
+        self,
+        fake_broker_backend: None,
+        make_worker: Callable[..., Worker],
+        monkeypatch: Any,
+    ) -> None:
+
+        policy = WorkerPolicy(
+            queues=["a", "b"],
+            concurrency=1,
+            dlq_retention=60.0,
+            poll_interval=0.01,
+        )
+        worker = make_worker(module_name=SAMPLE_MODULE, policy=policy)
+
+        try:
+            await worker.start()
+            broker = await worker._ensure_broker()
+
+            calls: list[tuple[str, float]] = []
+
+            async def fake_prune(queue: str, retention: float) -> int:
+
+                calls.append((queue, retention))
+                return 0
+
+            monkeypatch.setattr(broker, "dlq_prune", fake_prune)
+            monkeypatch.setattr(
+                "binomic.worker.worker.DLQ_PRUNE_INTERVAL",
+                0.0,
+            )
+
+            terminate = worker._ensure_terminate()
+
+            with anyio.move_on_after(0.3):
+                await worker._prune_dlq(terminate)
+
+            # Both queues are swept, and the retention handed to the broker
+            # is the policy's value, not the sweep's own default.
+            assert set(calls) == {("a", 60.0), ("b", 60.0)}
+
+        finally:
+            await worker.close()
+
+    async def test_capability_gap_skips_the_sweep(
+        self,
+        fake_broker_backend: None,
+        make_worker: Callable[..., Worker],
+    ) -> None:
+        """The sweep refuses to run against a broker without the mixin —
+        and the stub must not grow a dlq_prune attribute, or the isinstance
+        probe would pass."""
+
+        class BareBroker:
+            """A broker predating the DLQ management surface."""
+
+        worker = make_worker()
+        bare: Any = BareBroker()
+        worker._broker = bare
+
+        try:
+            terminate = worker._ensure_terminate()
+            done = False
+
+            with anyio.move_on_after(0.1):
+                await worker._prune_dlq(terminate)
+                done = True
+
+            assert done
+
+        finally:
+            await worker.close()

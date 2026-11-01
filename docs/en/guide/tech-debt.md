@@ -40,3 +40,31 @@ external service — means redoing the necessity review, which will also have to
 settle the place of enforcement (producer side or worker side), the counting
 scope (per process or Redis-global), and the overrun behavior (reject or
 delay).
+
+## The death-reason field in DLQ records
+
+**Adjudicated in November 2026: not implemented for now.**
+
+When the DLQ management surface (`dlq_depth` / `dlq_list` / `dlq_read` /
+`dlq_replay` / `dlq_prune` plus the retention policy) landed, persisting the
+death reason into the DLQ record was reviewed: the reason
+(`timeout` / `expired` / `max_attempts`) is known to the worker when it calls
+`dead()`, but storing it means extending the `_DEAD` script, the
+`Broker.dead` signature and the `WorkerHandler` call site.
+
+Why not built:
+
+- the `on_dead` hook already reports the reason in real time when the message
+  enters the DLQ, so the after-the-fact notification path has no gap;
+- the inspection surface covers what happened (task, arguments, terminal
+  `attempt`, the delivery stamp, the moment of entry); why it died stays the
+  hook's business;
+- the retention policy prunes by age and needs no reason field; no real
+  scenario filters or renders by death reason today;
+- the extension point sits on the delivery path (script and method
+  signature), where the risk is out of proportion to the benefit.
+
+What reopens it: a real scenario that filters, renders or cleans DLQ records
+by death reason. That review will need to design the `_DEAD` script, the
+`Broker.dead` signature and the compatible reading of existing records
+(without the reason field) together.

@@ -73,6 +73,56 @@ retry 与 reclaim 的重入前后深度不变（同脚本内先加新、后删�
 键——`{namespace}:{queue}:dlq:stream` + `:dlq:hash`；副本的 `attempt` 与最后一次
 投递一致（终态不再加一），原始 payload 原样保留，可检查、可重放。
 
+### DLQ 管理面
+
+实现了 `BrokerDlqCapability` 的 broker（内置 `RedisBroker` 即是）提供检查、重放
+与清理方法。client 不直接暴露这些方法：`await client.dead_letters(queue)` 完成
+broker 解析与能力探测（broker 不支持该能力时抛 `NotImplementedError`），返回
+绑定该队列的 **`DeadLetters` 操作句柄**，检查、重放与按需清理经句柄进行；
+worker 的周期清理（见「保留策略」）是自动默认，句柄的 `prune` 是同一维护原语
+的显式触发口径：
+
+| 句柄方法 | 委托 | 行为 |
+|-|-|
+| `dead_letters.depth()` | `dlq_depth(queue)` | DLQ 当前记录条数 |
+| `dead_letters.list(limit=50, cursor=None)` | `dlq_list(...)` | 按进入顺序分页，返回 `(记录列表, 下一页游标)`；游标是排他边界，翻页不重不漏 |
+| `dead_letters.read(entry_id)` | `dlq_read(...)` | 按条目 id 读取单条完整记录，不存在返回 `None` |
+| `dead_letters.replay(entry_id)` | `dlq_replay(...)` | 重放（语义见下） |
+| `dead_letters.prune(retention)` | `dlq_prune(...)` | 删除进入 DLQ 超过 `retention` 秒的记录；与 worker 周期清理共用同一原语，此处按需触发 |
+
+记录以 `DLQRecordEntry` 返回（继承 `MessageEntry`）：`id`（DLQ stream 条目 id，是
+重放与删除的定位符）、`queue`、`message`（原消息，含终态 `attempt`）、`enqueued_at`
+（最后一次投递时间戳），外加 `dead_at`（进入 DLQ 的时刻，由条目 id 前缀的毫秒时间戳
+派生，不占用存储）。
+
+### 重放语义
+
+`dlq_replay` 把一条 DLQ 记录以**全新消息**重新投递回原队列：
+
+- 新 UUID、`attempt` 重置 `1`——重放获得完整的重试预算，适用于缺陷修复后重跑；
+- 原始 payload 原样保留；
+- **源记录保留**：重放不删除 DLQ 记录，它保留「这条消息曾被重放过」的痕迹；
+- 同一条目可以重复重放，每次都产生一次新的执行——是否重放、重放几次由调用方判断；
+- 目标队列已满时抛 `QueueCapacityError`（与 `submit` 一致）；条目不存在（含已被
+  清理）时抛 `DLQEntryNotFoundError`。
+
+### 保留策略（自动清理）
+
+**行为变更**：DLQ 记录不再无限保留。`dlq_retention`（`BinomicConfig` 与
+`WorkerPolicy` 字段，默认 `7 * 86400.0` 即 7 天）控制保留时长：worker 每 60 秒
+扫描一次，把进入 DLQ 超过保留时长的记录（stream 条目与 hash 记录成对）原子删除；
+删除时刻最迟滞后「保留时长 + 一个扫描周期」。
+
+- 设为 `None` 关闭自动清理，恢复「记录永久保留」的旧行为；
+- 「进入 DLQ 的时刻」取自 DLQ stream 条目 id 前缀（Redis 服务端毫秒时间戳），
+  清理不解析 payload；单次调用至多删除 1000 条，剩余由下个周期继续；
+- 自动删除不可逆：尚未重放的记录到期后同样会被删除——需要长期保留的场景请把
+  `dlq_retention` 设为 `None` 或更大的值。
+
+死亡原因（执行超时 / 排队超龄 / 次数耗尽）不写入 DLQ 记录：`on_dead` 钩子在
+消息进入 DLQ 时已实时告知原因（见下节），检查面展示的是发生了什么（任务、参数、
+次数、时间）；该缺口的裁决记录见[技术债务](tech-debt.md)。
+
 ## 死信通知钩子（on_dead）
 
 DLQ 不是终点的静默：任务可以用 `@task(..., on_dead=fn)` 声明一个**死信通知钩子**。
@@ -102,8 +152,8 @@ async def charge() -> None: ...
   （队列、stream 条目 id、payload、投递时间戳俱全）；`reason` 是 `"timeout"` /
   `"expired"` / `"max_attempts"` 之一；`exc` 为触发异常——执行超时是 `TimeoutError`
   实例，耗尽次数是任务抛出的原始异常，超龄则是 `None`；
-- **无返回值**：钩子是对既成事实的通知，不是控制流——返回值被忽略；从 DLQ 重放等
-  后续处置由消费方自行承担；
+- **无返回值**：钩子是对既成事实的通知，不是控制流——返回值被忽略；重放等后续
+  处置经上文的 DLQ 管理面进行；
 - 同步、异步函数皆可；
 - **永不影响投递语义**：钩子抛出的异常会被记录（warning）并忽略，消费循环照常；
   唯有取消（与退出信号）原样向上传播；

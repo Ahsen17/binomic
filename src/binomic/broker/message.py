@@ -1,5 +1,5 @@
 from collections.abc import Iterable, Mapping
-from typing import Any
+from typing import Any, Self
 from uuid import UUID
 
 from msgspec import field
@@ -8,6 +8,7 @@ from uuid_utils.compat import uuid7
 from binomic.base import BaseStruct
 
 __all__ = (
+    "DLQRecordEntry",
     "Message",
     "MessageEntry",
 )
@@ -42,3 +43,27 @@ class MessageEntry(BaseStruct):
     queue: str
     message: Message
     enqueued_at: float
+
+
+class DLQRecordEntry(MessageEntry):
+    """Read-only view of one DLQ record.
+
+    ``id`` (inherited) is the DLQ stream entry id — the ``:dlq:hash`` key and
+    the handle for reads, replays and pruning. ``dead_at`` is the moment the
+    message entered the DLQ, derived from the entry id's millisecond stamp
+    (Redis server time at ``XADD``) and never stored.
+    """
+
+    dead_at: float
+
+    @classmethod
+    def from_entry(cls, entry: "MessageEntry") -> Self:
+        """Build a record from a DLQ hash envelope read as a MessageEntry."""
+
+        return cls(
+            id=entry.id,
+            queue=entry.queue,
+            message=entry.message,
+            enqueued_at=entry.enqueued_at,
+            dead_at=float(entry.id.split("-")[0]) / 1000,
+        )

@@ -96,6 +96,69 @@ messages, and exhausted `max_attempts`. The DLQ is a pair of keys per queue —
 matches the last delivery (terminal states do not bump it) and the payload is
 preserved whole: inspectable and replayable.
 
+### DLQ management surface
+
+A broker implementing `BrokerDlqCapability` (the built-in `RedisBroker` does)
+exposes inspection, replay and pruning methods. The client does not mirror
+them directly: `await client.dead_letters(queue)` resolves the broker and
+probes the capability (raising `NotImplementedError` when the broker lacks
+it), returning a **`DeadLetters` operations handle** bound to that queue —
+inspection, replay and on-demand pruning go through the handle. The worker's
+periodic sweep (see "Retention") is the automatic default; the handle's
+`prune` is the explicit trigger over the same primitive:
+
+| Handle method | Delegates to | Behavior |
+|-|-|
+| `dead_letters.depth()` | `dlq_depth(queue)` | How many dead letters the queue currently holds |
+| `dead_letters.list(limit=50, cursor=None)` | `dlq_list(...)` | Pages oldest-first, returning `(records, next_cursor)`; the cursor is an exclusive bound, so pages never repeat or skip |
+| `dead_letters.read(entry_id)` | `dlq_read(...)` | One full record by stream entry id, or `None` |
+| `dead_letters.replay(entry_id)` | `dlq_replay(...)` | Replay (semantics below) |
+| `dead_letters.prune(retention)` | `dlq_prune(...)` | Delete records that entered the DLQ more than `retention` seconds ago; same primitive as the worker's sweep, triggered on demand |
+
+Records come back as `DLQRecordEntry` (subclassing `MessageEntry`): `id` (the
+DLQ stream entry id — the handle for replays and deletion), `queue`,
+`message` (the original message, with its terminal `attempt`), `enqueued_at`
+(the last delivery stamp), plus `dead_at` (when the message entered the DLQ,
+derived from the entry id's millisecond stamp — never stored).
+
+### Replay semantics
+
+`dlq_replay` re-delivers a DLQ record to its original queue as a **brand-new
+message**:
+
+- a fresh UUID and `attempt` reset to `1` — the replay gets the full retry
+  budget, which is what "rerun after the fix" needs;
+- the original payload is preserved whole;
+- **the source record is kept**: replaying never deletes the DLQ record,
+  which stays as the trace that this message was replayed;
+- the same entry may be replayed repeatedly, and every replay is a fresh
+  execution — whether and how often to replay is the caller's judgment;
+- a full target queue raises `QueueCapacityError` (same as `submit`); an
+  unknown entry (including one already pruned) raises
+  `DLQEntryNotFoundError`.
+
+### Retention (automatic cleanup)
+
+**Behavior change**: DLQ records are no longer kept forever. `dlq_retention`
+(a `BinomicConfig` and `WorkerPolicy` field, default `7 * 86400.0` — seven
+days) bounds how long a record may sit in the DLQ: the worker sweeps every 60
+seconds and atomically deletes expired records (stream entry and hash record
+together); deletion lands at most one sweep after the retention elapses.
+
+- set it to `None` to disable the sweep and restore the old keep-forever
+  behavior;
+- the age comes from the DLQ stream entry id's prefix (the Redis server
+  millisecond stamp), so pruning never decodes payloads; a single call
+  deletes at most 1000 records and the rest wait for the next sweep;
+- deletion is irreversible: records not yet replayed expire like any other —
+  for long-lived archives set `dlq_retention` to `None` or a larger value.
+
+The death reason (execution timeout / staleness / exhausted attempts) is not
+written into the DLQ record: the `on_dead` hook already reports it in real
+time when the message enters the DLQ (next section), while the inspection
+surface shows what happened (task, arguments, attempts, times); the
+adjudication of that gap lives in [tech debt](tech-debt.md).
+
 ## Dead-letter notification hooks (on_dead)
 
 The DLQ is not a silent end: a task can declare a **dead-letter notification
@@ -129,8 +192,8 @@ The hook contract:
   `TimeoutError` instance for an execution timeout, the task's original
   exception at exhausted attempts, and `None` for staleness;
 - **no return value**: the hook is a notification about a fact, not control
-  flow — return values are ignored; replays from the DLQ stay the consumer's
-  business;
+  flow — return values are ignored; later dispositions such as replays go
+  through the DLQ management surface above;
 - sync and async functions both work;
 - **delivery semantics are never affected**: an exception raised by a hook is
   logged (warning) and swallowed, and the consume loop carries on; only

@@ -1,14 +1,22 @@
-from .exceptions import QueueCapacityError
+from .exceptions import DLQEntryNotFoundError, QueueCapacityError
 from .factory import BrokerFactory
-from .message import Message, MessageEntry
-from .protocols import Broker, BrokerLifecycleMixin, BrokerTelemetryMixin
+from .message import DLQRecordEntry, Message, MessageEntry
+from .protocols import (
+    Broker,
+    BrokerDlqCapability,
+    BrokerLifecycleCapability,
+    BrokerTelemetryCapability,
+)
 from .redis import RedisBroker
 
 __all__ = (
     "Broker",
+    "BrokerDlqCapability",
     "BrokerFactory",
-    "BrokerLifecycleMixin",
-    "BrokerTelemetryMixin",
+    "BrokerLifecycleCapability",
+    "BrokerTelemetryCapability",
+    "DLQEntryNotFoundError",
+    "DLQRecordEntry",
     "Message",
     "MessageEntry",
     "QueueCapacityError",

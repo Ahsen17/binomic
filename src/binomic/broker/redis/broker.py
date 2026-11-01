@@ -7,12 +7,13 @@ import structlog
 from redis.asyncio import BlockingConnectionPool, Redis
 from redis.exceptions import ResponseError
 
-from binomic.broker.exceptions import QueueCapacityError
-from binomic.broker.message import MessageEntry
+from binomic.broker.exceptions import DLQEntryNotFoundError, QueueCapacityError
+from binomic.broker.message import DLQRecordEntry, Message, MessageEntry
 from binomic.broker.protocols import (
     Broker,
-    BrokerLifecycleMixin,
-    BrokerTelemetryMixin,
+    BrokerDlqCapability,
+    BrokerLifecycleCapability,
+    BrokerTelemetryCapability,
 )
 
 from .schemas import ScriptResponse
@@ -21,6 +22,7 @@ from .scripts import (
     _ACQUIRE,
     _CONTEXT,
     _DEAD,
+    _DLQ_PRUNE,
     _ENQUEUE,
     _OBSERVE,
     _RECLAIM,
@@ -30,8 +32,6 @@ from .scripts import (
 if TYPE_CHECKING:
     from redis.commands.core import AsyncScript
     from redis.typing import EncodableT, KeyT
-
-    from binomic.broker.message import Message
 
 
 __all__ = ("RedisBroker",)
@@ -46,12 +46,21 @@ SCRIPTS: Final[dict[str, str]] = {
     "reclaim": _RECLAIM,
     "observe": _OBSERVE,
     "context": _CONTEXT,
+    "dlq_prune": _DLQ_PRUNE,
 }
+
+_DLQ_LIST_LIMIT_MAX: Final[int] = 200
+_DLQ_PRUNE_BATCH: Final[int] = 1000
 
 logger = structlog.stdlib.get_logger(__name__)
 
 
-class RedisBroker(Broker, BrokerLifecycleMixin, BrokerTelemetryMixin):
+class RedisBroker(
+    Broker,
+    BrokerLifecycleCapability,
+    BrokerTelemetryCapability,
+    BrokerDlqCapability,
+):
     """Redis Streams broker backed by atomic Lua scripts.
 
     ``namespace`` is both the key prefix (``{namespace}:{queue}:stream``) and
@@ -218,6 +227,14 @@ class RedisBroker(Broker, BrokerLifecycleMixin, BrokerTelemetryMixin):
     def get_dlq_key(self, queue: str) -> str:
 
         return f"{self._group}:{queue}:dlq"
+
+    def get_dlq_stream_key(self, queue: str) -> str:
+
+        return f"{self._group}:{queue}:dlq:stream"
+
+    def get_dlq_hash_key(self, queue: str) -> str:
+
+        return f"{self._group}:{queue}:dlq:hash"
 
     async def initialize(self) -> None:
 
@@ -392,3 +409,106 @@ class RedisBroker(Broker, BrokerLifecycleMixin, BrokerTelemetryMixin):
             return depth, None
 
         return depth, max(0.0, time.time() - oldest_ms / 1000)
+
+    async def dlq_depth(self, queue: str) -> int:
+
+        return await self._ensure_client().xlen(
+            name=self.get_dlq_stream_key(queue),
+        )
+
+    async def dlq_list(
+        self,
+        queue: str,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> "tuple[list[DLQRecordEntry], str | None]":
+
+        if not 1 <= limit <= _DLQ_LIST_LIMIT_MAX:
+            raise ValueError(
+                f"`limit` must be within [1, {_DLQ_LIST_LIMIT_MAX}], got {limit}"
+            )
+
+        client = self._ensure_client()
+
+        # One extra stream entry tells whether a next page exists; the cursor
+        # is the last returned entry id (an exclusive bound on the next page),
+        # so hash-missing entries are skipped without duplicating or losing
+        # stream positions.
+        raw = cast(
+            "list[tuple[str, Any]]",
+            await client.xrange(
+                name=self.get_dlq_stream_key(queue),
+                min=f"({cursor}" if cursor is not None else "-",
+                max="+",
+                count=limit + 1,
+            ),
+        )
+
+        more = len(raw) > limit
+        raw = raw[:limit]
+
+        records: list[DLQRecordEntry] = []
+
+        for entry_id, _fields in raw:
+            body = await client.hget(self.get_dlq_hash_key(queue), entry_id)
+
+            if body is not None:
+                records.append(
+                    DLQRecordEntry.from_entry(
+                        MessageEntry.from_json(cast("str", body)),
+                    ),
+                )
+
+        return records, raw[-1][0] if more else None
+
+    async def dlq_read(self, queue: str, entry_id: str) -> "DLQRecordEntry | None":
+
+        body = await self._ensure_client().hget(
+            name=self.get_dlq_hash_key(queue),
+            key=entry_id,
+        )
+
+        if body is None:
+            return None
+
+        return DLQRecordEntry.from_entry(MessageEntry.from_json(cast("str", body)))
+
+    async def dlq_replay(self, queue: str, entry_id: str) -> "MessageEntry | None":
+
+        record = await self.dlq_read(queue, entry_id)
+
+        if record is None:
+            raise DLQEntryNotFoundError(queue=queue, entry_id=entry_id)
+
+        message = Message(
+            task=record.message.task,
+            args=record.message.args,
+            kwargs=record.message.kwargs,
+        )
+
+        entry = await self.enqueue(queue, message)
+
+        if entry is not None:
+            logger.info(
+                "DLQ message replayed",
+                queue=queue,
+                entry_id=entry_id,
+                message_id=str(entry.message.id),
+            )
+
+        return entry
+
+    async def dlq_prune(self, queue: str, retention: float) -> int:
+
+        if retention <= 0:
+            raise ValueError(f"`retention` must be positive, got {retention}")
+
+        cutoff_ms = int(time.time() * 1000 - retention * 1000)
+
+        resp = await self._invoke_script(
+            script="dlq_prune",
+            keys=[],
+            args=[self._group, queue, cutoff_ms, _DLQ_PRUNE_BATCH],
+        )
+
+        return 0 if resp is None else cast("int", resp)

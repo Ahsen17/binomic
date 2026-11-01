@@ -83,7 +83,7 @@ worker 的周期清理（见「保留策略」）是自动默认，句柄的 `pr
 的显式触发口径：
 
 | 句柄方法 | 委托 | 行为 |
-|-|-|
+|-|-|-|
 | `dead_letters.depth()` | `dlq_depth(queue)` | DLQ 当前记录条数 |
 | `dead_letters.list(limit=50, cursor=None)` | `dlq_list(...)` | 按进入顺序分页，返回 `(记录列表, 下一页游标)`；游标是排他边界，翻页不重不漏 |
 | `dead_letters.read(entry_id)` | `dlq_read(...)` | 按条目 id 读取单条完整记录，不存在返回 `None` |

@@ -79,7 +79,7 @@ trace.set_tracer_provider(provider)
 每次 `submit`（以及 cron/interval 的每次触发）产生一个 `create {queue}` PRODUCER
 span，并把当前 W3C trace context（`traceparent`、`tracestate`、`baggage`）写入
 broker 的独立上下文存储（Redis 实现为 `{namespace}:{queue}:context`，按消息 id
-存放）—— 消息封套（`Message` / `MessageEntry`）本身不携带任何遥测字段。direct
+存放）—— 消息包装（`Message` / `MessageEntry`）本身不携带任何遥测字段。direct
 任务在本次 enqueue 时写入；delay 任务在提交时捕获上下文、到期投递时写入。
 
 ### Worker 子进程

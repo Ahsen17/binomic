@@ -148,7 +148,7 @@ async def charge() -> None: ...
 
 钩子契约：
 
-- 以 `fn(entry, reason, exc)` **位置参数**调用：`entry` 是消费侧封套 `MessageEntry`
+- 以 `fn(entry, reason, exc)` **位置参数**调用：`entry` 是消费侧包装 `MessageEntry`
   （队列、stream 条目 id、payload、投递时间戳俱全）；`reason` 是 `"timeout"` /
   `"expired"` / `"max_attempts"` 之一；`exc` 为触发异常——执行超时是 `TimeoutError`
   实例，耗尽次数是任务抛出的原始异常，超龄则是 `None`；

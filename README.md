@@ -164,7 +164,7 @@ flowchart TD
   触发器，到期后走与 `direct` 相同的入队路径。每个 Worker 自己也持有一个
   `TaskScheduler`，承担失败重投的退避延时。
 - **Broker**：`RedisBroker` 将消息写入 Redis Streams：每队列 `:stream`（条目只存
-  消息 id）+ `:hash`（完整封套），开启遥测时另有 `:context`（trace 上下文，按消息 id
+  消息 id）+ `:hash`（完整包装），开启遥测时另有 `:context`（trace 上下文，按消息 id
   存放，ack/dead 时清理）；DLQ 是 `:dlq:stream` + `:dlq:hash`。失联消费者的 PEL
   消息由 `reclaim`（`xautoclaim`）回收重投，重投时 `attempt + 1` 并重新写入时间戳；
   失败重投则保留原 `enqueued_at`——`task_timeout` 是投递总时限。

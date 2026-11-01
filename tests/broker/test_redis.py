@@ -9,7 +9,13 @@ from typing import Any, cast
 import pytest
 from pytest_mock import MockerFixture
 
-from binomic.broker import Message, MessageEntry, QueueCapacityError, RedisBroker
+from binomic.broker import (
+    DLQEntryNotFoundError,
+    Message,
+    MessageEntry,
+    QueueCapacityError,
+    RedisBroker,
+)
 from binomic.broker.redis.broker import SCRIPTS
 from binomic.broker.redis.schemas import ScriptResponse
 from binomic.broker.redis.scripts import _COMMON
@@ -43,6 +49,7 @@ class TestScripts:
             "reclaim",
             "observe",
             "context",
+            "dlq_prune",
         }
 
     def test_scripts_embed_the_shared_preamble_once(self) -> None:
@@ -856,3 +863,253 @@ class TestObserve:
         assert age is not None and age >= 0
 
         await broker.close()
+
+
+async def dead_letter(
+    broker: RedisBroker,
+    message: Message,
+    queue: str = "default",
+) -> str:
+    """Enqueue and immediately dead-letter a message; return its DLQ entry id."""
+
+    entry = await broker.enqueue(queue, message)
+    assert entry is not None
+
+    assert await broker.dead(entry) == 1
+
+    entries = await broker._ensure_client().xrange(
+        f"{broker._group}:{queue}:dlq:stream",
+        "-",
+        "+",
+    )
+    assert entries is not None
+
+    return cast("str", cast("list[tuple[Any, Any]]", entries)[-1][0])
+
+
+async def store_dlq_record(
+    broker: RedisBroker,
+    message: Message,
+    entry_id: str,
+) -> None:
+    """Hand-place a DLQ record under an explicit (stale) stream entry id."""
+
+    envelope = MessageEntry(
+        id=entry_id,
+        queue="default",
+        message=message,
+        enqueued_at=0.0,
+    )
+
+    client = broker._ensure_client()
+    await client.xadd(DLQ_STREAM_KEY, {"id": str(message.id)}, id=entry_id)
+    await client.hset(DLQ_HASH_KEY, entry_id, envelope.to_json())
+
+
+class TestDlqDepth:
+    async def test_empty_dlq_depths_zero(self, broker: RedisBroker) -> None:
+
+        assert await broker.dlq_depth("default") == 0
+
+    async def test_counts_dead_lettered_records(
+        self,
+        broker: RedisBroker,
+        make_message: Callable[..., Message],
+    ) -> None:
+
+        await dead_letter(broker, make_message())
+        await dead_letter(broker, make_message())
+
+        assert await broker.dlq_depth("default") == 2
+
+
+class TestDlqRead:
+    async def test_reads_the_full_record(
+        self,
+        broker: RedisBroker,
+        make_message: Callable[..., Message],
+    ) -> None:
+
+        msg = make_message(task="charge", attempt=2, args=[1], kwargs={"k": "v"})
+        dlq_id = await dead_letter(broker, msg)
+
+        record = await broker.dlq_read("default", dlq_id)
+
+        assert record is not None
+        assert record.id == dlq_id
+        assert record.queue == "default"
+        assert record.message.id == msg.id
+        assert record.message.task == "charge"
+        assert record.message.attempt == 2
+        assert record.message.args == [1]
+        assert record.message.kwargs == {"k": "v"}
+        assert record.dead_at == pytest.approx(time.time(), abs=5.0)
+
+    async def test_unknown_id_reads_none(self, broker: RedisBroker) -> None:
+
+        assert await broker.dlq_read("default", "999-0") is None
+
+
+class TestDlqList:
+    async def test_empty_dlq_lists_empty(self, broker: RedisBroker) -> None:
+
+        assert await broker.dlq_list("default") == ([], None)
+
+    async def test_pages_oldest_first_without_repetition(
+        self,
+        broker: RedisBroker,
+        make_message: Callable[..., Message],
+    ) -> None:
+
+        ids = [await dead_letter(broker, make_message(task=f"t{i}")) for i in range(3)]
+
+        page1, cursor = await broker.dlq_list("default", limit=2)
+        page2, next_cursor = await broker.dlq_list("default", limit=2, cursor=cursor)
+
+        assert [record.id for record in page1] == ids[:2]
+        assert [record.id for record in page2] == ids[2:]
+        assert next_cursor is None
+
+    async def test_rejects_out_of_range_limit(self, broker: RedisBroker) -> None:
+
+        with pytest.raises(ValueError, match="limit"):
+            await broker.dlq_list("default", limit=0)
+
+        with pytest.raises(ValueError, match="limit"):
+            await broker.dlq_list("default", limit=201)
+
+    async def test_skips_entries_without_hash_record(
+        self,
+        broker: RedisBroker,
+        make_message: Callable[..., Message],
+    ) -> None:
+
+        kept_id = await dead_letter(broker, make_message())
+        lost_id = await dead_letter(broker, make_message())
+        await broker._ensure_client().hdel(DLQ_HASH_KEY, lost_id)
+
+        records, cursor = await broker.dlq_list("default", limit=10)
+
+        assert [record.id for record in records] == [kept_id]
+        assert cursor is None
+
+
+class TestDlqReplay:
+    async def test_replays_as_new_message_and_keeps_the_source(
+        self,
+        broker: RedisBroker,
+        make_message: Callable[..., Message],
+    ) -> None:
+
+        msg = make_message(task="charge", attempt=3, args=[7])
+        dlq_id = await dead_letter(broker, msg)
+
+        replayed = await broker.dlq_replay("default", dlq_id)
+
+        assert replayed is not None
+        assert replayed.queue == "default"
+        assert replayed.message.id != msg.id
+        assert replayed.message.attempt == 1
+        assert replayed.message.task == "charge"
+        assert replayed.message.args == [7]
+
+        # The source record is untouched: depth stays and the original
+        # payload still reads back.
+        assert await broker.dlq_depth("default") == 1
+        source = await broker.dlq_read("default", dlq_id)
+        assert source is not None
+        assert source.message.id == msg.id
+
+    async def test_unknown_id_raises_dlq_entry_not_found(
+        self, broker: RedisBroker
+    ) -> None:
+
+        with pytest.raises(DLQEntryNotFoundError, match="999-0"):
+            await broker.dlq_replay("default", "999-0")
+
+    async def test_full_queue_raises_capacity_error(
+        self,
+        make_broker: Callable[..., RedisBroker],
+        make_message: Callable[..., Message],
+    ) -> None:
+
+        broker = make_broker(["default"], capacity=1)
+        await broker.start()
+
+        try:
+            dlq_id = await dead_letter(broker, make_message())
+            await broker.enqueue("default", make_message(task="filler"))
+
+            with pytest.raises(QueueCapacityError):
+                await broker.dlq_replay("default", dlq_id)
+
+        finally:
+            await broker.close()
+
+
+class TestDlqPrune:
+    async def test_deletes_only_the_expired_prefix(
+        self,
+        broker: RedisBroker,
+        make_message: Callable[..., Message],
+    ) -> None:
+
+        await store_dlq_record(broker, make_message(task="old"), "1000-1")
+        fresh_id = await dead_letter(broker, make_message(task="fresh"))
+
+        pruned = await broker.dlq_prune("default", retention=10.0)
+
+        assert pruned == 1
+        assert await broker.dlq_depth("default") == 1
+        assert await broker.dlq_read("default", "1000-1") is None
+        assert await broker.dlq_read("default", fresh_id) is not None
+
+    async def test_drops_nothing_when_all_records_are_fresh(
+        self,
+        broker: RedisBroker,
+        make_message: Callable[..., Message],
+    ) -> None:
+
+        await dead_letter(broker, make_message())
+
+        assert await broker.dlq_prune("default", retention=10.0) == 0
+        assert await broker.dlq_depth("default") == 1
+
+    async def test_prunes_an_empty_dlq_to_zero(self, broker: RedisBroker) -> None:
+
+        assert await broker.dlq_prune("default", retention=10.0) == 0
+
+    async def test_failure_degrades_to_zero(
+        self,
+        broker: RedisBroker,
+        mocker: MockerFixture,
+    ) -> None:
+
+        mocker.patch.object(broker, "_invoke_script", return_value=None)
+
+        assert await broker.dlq_prune("default", retention=10.0) == 0
+
+    async def test_rejects_non_positive_retention(self, broker: RedisBroker) -> None:
+
+        with pytest.raises(ValueError, match="retention"):
+            await broker.dlq_prune("default", retention=0.0)
+
+    async def test_batch_caps_a_single_invocation(
+        self,
+        broker: RedisBroker,
+        make_message: Callable[..., Message],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+
+        monkeypatch.setattr("binomic.broker.redis.broker._DLQ_PRUNE_BATCH", 2)
+
+        for seq in (1, 2, 3):
+            await store_dlq_record(
+                broker,
+                make_message(task=f"old{seq}"),
+                f"1000-{seq}",
+            )
+
+        assert await broker.dlq_prune("default", retention=10.0) == 2
+        assert await broker.dlq_depth("default") == 1
+        assert await broker.dlq_prune("default", retention=10.0) == 1

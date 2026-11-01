@@ -3,12 +3,13 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from .message import Message, MessageEntry
+    from .message import DLQRecordEntry, Message, MessageEntry
 
 __all__ = (
     "Broker",
-    "BrokerLifecycleMixin",
-    "BrokerTelemetryMixin",
+    "BrokerDlqCapability",
+    "BrokerLifecycleCapability",
+    "BrokerTelemetryCapability",
 )
 
 
@@ -61,7 +62,7 @@ class Broker(Protocol):
 
 
 @runtime_checkable
-class BrokerLifecycleMixin(Protocol):
+class BrokerLifecycleCapability(Protocol):
     """The start/stop half of the broker surface.
 
     Clients and workers bring a broker up through this mixin, so any
@@ -75,7 +76,7 @@ class BrokerLifecycleMixin(Protocol):
 
 
 @runtime_checkable
-class BrokerTelemetryMixin(Protocol):
+class BrokerTelemetryCapability(Protocol):
     """Optional observability probes a broker may implement.
 
     Kept out of ``Broker`` so custom brokers stay valid without them; the
@@ -101,3 +102,65 @@ class BrokerTelemetryMixin(Protocol):
         on an empty stream and the whole result ``None`` when the probe
         degrades, so a hiccup never reads as an empty queue.
         """
+
+
+@runtime_checkable
+class BrokerDlqCapability(Protocol):
+    """Optional DLQ management surface a broker may implement.
+
+    Kept out of ``Broker`` so custom brokers stay valid without it; callers
+    (the ``Binomic`` convenience methods and the worker's prune sweep) probe
+    for the capability with ``isinstance``. Reads are plain commands whose
+    connection errors propagate — management is an explicit operation, not a
+    delivery-path concern — while the prune script keeps the ``ScriptResponse``
+    degrade contract.
+    """
+
+    async def dlq_depth(self, queue: str) -> int:
+        """Return how many records the queue's DLQ currently holds."""
+
+        ...
+
+    async def dlq_list(
+        self,
+        queue: str,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> tuple[list["DLQRecordEntry"], str | None]:
+        """Page through the DLQ oldest-first.
+
+        Returns ``(records, next_cursor)``; ``next_cursor`` is ``None`` at
+        the end of the stream, otherwise feed it back as ``cursor`` (an
+        exclusive bound, so pages never repeat or skip). Entries whose hash
+        record is missing are skipped, not errors.
+        """
+
+        ...
+
+    async def dlq_read(self, queue: str, entry_id: str) -> "DLQRecordEntry | None":
+        """Return one full record by DLQ stream entry id, or ``None``."""
+
+        ...
+
+    async def dlq_replay(self, queue: str, entry_id: str) -> "MessageEntry | None":
+        """Re-deliver a DLQ record as a brand-new message.
+
+        The replay carries a fresh UUID and ``attempt = 1`` (a full retry
+        budget) and targets the record's original queue; the source record is
+        kept. Raises ``DLQEntryNotFoundError`` when the id is unknown, and
+        ``QueueCapacityError`` out of ``enqueue`` on a full queue; ``None``
+        means the enqueue degraded (warning already logged).
+        """
+
+        ...
+
+    async def dlq_prune(self, queue: str, retention: float) -> int:
+        """Delete records that entered the DLQ more than ``retention`` seconds ago.
+
+        The entry age comes from the DLQ stream entry id's millisecond stamp,
+        so the payload is never decoded; at most one bounded batch is deleted
+        per call. Returns the number of records deleted; script failures
+        degrade to ``0``.
+        """
+
+        ...

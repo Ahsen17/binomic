@@ -513,3 +513,41 @@ end
 
 return reply_ok(decoded)
 """
+
+_DLQ_PRUNE = f"""\
+{_COMMON}
+
+local namespace = ARGV[1]
+local queue = ARGV[2]
+local cutoff_ms = tonumber(ARGV[3])
+local max_batch = tonumber(ARGV[4])
+
+if not cutoff_ms or not max_batch or max_batch < 1 then
+    return reply_error("Invalid arguments")
+end
+
+-- Expired records form a prefix of the DLQ stream: entry ids are server
+-- timestamps and grow monotonically, so scanning from the oldest end can
+-- stop at the first fresh entry. The payload is never decoded — the entry
+-- id's millisecond stamp is the whole age test.
+local dlq_sk = dlq_stream_key(namespace, queue)
+local dlq_hk = dlq_hash_key(namespace, queue)
+
+local pruned = 0
+local entries = redis.call("XRANGE", dlq_sk, "-", "+", "COUNT", max_batch)
+
+for _, entry in ipairs(entries) do
+    local msid = entry[1]
+    local stamped = tonumber(string.match(msid, "^(%d+)-"))
+
+    if not stamped or stamped >= cutoff_ms then
+        break
+    end
+
+    redis.call("XDEL", dlq_sk, msid)
+    redis.call("HDEL", dlq_hk, msid)
+    pruned = pruned + 1
+end
+
+return reply_ok(pruned)
+"""

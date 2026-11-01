@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 import anyio
 import structlog
 
-from binomic.broker import BrokerTelemetryMixin
+from binomic.broker import BrokerTelemetryCapability
 from binomic.otel import (
     DEAD_REASON,
     MESSAGING_DESTINATION_NAME,
@@ -349,7 +349,7 @@ class WorkerHandler:
 
         carrier: dict[str, str] | None = None
 
-        if isinstance(self._broker, BrokerTelemetryMixin):
+        if isinstance(self._broker, BrokerTelemetryCapability):
             try:
                 carrier = await self._broker.trace_context(
                     entry.queue,

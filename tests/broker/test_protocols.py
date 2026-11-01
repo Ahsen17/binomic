@@ -1,7 +1,7 @@
 from binomic.broker import (
     Broker,
-    BrokerLifecycleMixin,
-    BrokerTelemetryMixin,
+    BrokerLifecycleCapability,
+    BrokerTelemetryCapability,
     RedisBroker,
 )
 
@@ -31,10 +31,10 @@ class DuckBroker:
 class TestProtocols:
     def test_are_runtime_checkable(self) -> None:
 
-        assert isinstance(DuckBroker(), BrokerLifecycleMixin)
+        assert isinstance(DuckBroker(), BrokerLifecycleCapability)
         assert isinstance(DuckBroker(), Broker)
-        assert not isinstance(DuckBroker(), BrokerTelemetryMixin)
-        assert not isinstance(object(), BrokerLifecycleMixin)
+        assert not isinstance(DuckBroker(), BrokerTelemetryCapability)
+        assert not isinstance(object(), BrokerLifecycleCapability)
 
     def test_redis_broker_satisfies_both(self) -> None:
 
@@ -45,5 +45,5 @@ class TestProtocols:
         )
 
         assert isinstance(broker, Broker)
-        assert isinstance(broker, BrokerLifecycleMixin)
-        assert isinstance(broker, BrokerTelemetryMixin)
+        assert isinstance(broker, BrokerLifecycleCapability)
+        assert isinstance(broker, BrokerTelemetryCapability)

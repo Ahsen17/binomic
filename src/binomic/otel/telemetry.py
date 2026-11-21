@@ -1,231 +1,175 @@
-"""The telemetry boundary.
-
-The only place in ``src`` that imports ``opentelemetry``. The dependency is
-optional (``binomic[otel]``): this module always imports, and the
-context/error helpers degrade to no-ops when the extra is missing. The
-``create_*``/``start_*`` helpers require the extra: callers reach them only
-after ``ensure_available()`` (run by the client and worker when
-``otel_enabled=True``), so a missing extra fails early instead of midway.
-
-Library code talks to the OpenTelemetry *API* through these helpers; the
-SDK, its providers and any exporter belong to the application embedding
-binomic. With no provider set every call is a no-op proxy.
-"""
-
 from typing import TYPE_CHECKING, Any, Final
-
-import structlog
-
-if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping
-
-
-__all__ = (
-    "AVAILABLE",
-    "DEAD_REASON",
-    "MESSAGING_DESTINATION_NAME",
-    "MESSAGING_MESSAGE_ID",
-    "MESSAGING_OPERATION_NAME",
-    "MESSAGING_SYSTEM",
-    "MESSAGING_SYSTEM_VALUE",
-    "QUEUE_NAME",
-    "RESTART_REASON",
-    "TASK_ATTEMPT",
-    "TASK_NAME",
-    "WORKER_CONSUMER",
-    "capture_context",
-    "create_counter",
-    "create_histogram",
-    "create_observable_gauge",
-    "create_up_down_counter",
-    "ensure_available",
-    "extract_context",
-    "mark_span_error",
-    "start_process_span",
-    "start_producer_span",
-)
-
-
-logger = structlog.stdlib.get_logger(__name__)
-
-SCOPE_NAME: Final = "binomic"
-
-MESSAGING_SYSTEM: Final = "messaging.system"
-MESSAGING_OPERATION_NAME: Final = "messaging.operation.name"
-MESSAGING_DESTINATION_NAME: Final = "messaging.destination.name"
-MESSAGING_MESSAGE_ID: Final = "messaging.message.id"
-
-MESSAGING_SYSTEM_VALUE: Final = "binomic"
-
-TASK_NAME: Final = "binomic.task.name"
-TASK_ATTEMPT: Final = "binomic.task.attempt"
-QUEUE_NAME: Final = "binomic.queue.name"
-WORKER_CONSUMER: Final = "binomic.worker.consumer"
-DEAD_REASON: Final = "binomic.dead.reason"
-RESTART_REASON: Final = "binomic.worker.reason"
-
-# The W3C Trace Context fields persisted for delivery.
-_TRACE_KEYS: Final[tuple[str, ...]] = ("traceparent", "tracestate", "baggage")
-
-_INSTALL_HINT: Final = (
-    "OpenTelemetry is enabled (`otel_enabled=True`) but the optional "
-    "`opentelemetry-api` dependency is missing. Install `binomic[otel]`."
-)
 
 try:
     import opentelemetry  # noqa: F401
+    from opentelemetry import metrics, trace
+    from opentelemetry.context import get_current
+    from opentelemetry.metrics import Observation
+    from opentelemetry.propagate import extract, inject
+    from opentelemetry.trace import SpanKind, Status, StatusCode, get_current_span
 
-except ImportError:  # pragma: no cover - exercised without the extra
+    if TYPE_CHECKING:
+        from opentelemetry.metrics import (
+            Counter,
+            Histogram,
+            ObservableGauge,
+            UpDownCounter,
+        )
+
+except ImportError:
     AVAILABLE = False
 
 else:
     AVAILABLE = True
 
 
-def ensure_available() -> None:
-    """Fail fast when telemetry is enabled without the optional extra."""
+from collections.abc import Callable, Iterable, Mapping
 
-    if not AVAILABLE:
-        raise RuntimeError(_INSTALL_HINT)
+import structlog
 
+from .signatures import SCOPE_NAME
 
-def _tracer() -> Any:
+_TRACE_KEYS: Final[tuple[str, ...]] = ("traceparent", "tracestate", "baggage")
 
-    from opentelemetry import trace
-
-    return trace.get_tracer(SCOPE_NAME)
+logger = structlog.stdlib.get_logger(__name__)
 
 
-def _meter() -> Any:
+class Telemetry:
+    """Thin wrapper over the OpenTelemetry tracer and meter.
 
-    from opentelemetry import metrics
+    Constructing one requires ``opentelemetry-api``; the module-level ``otel``
+    instance is ``None`` when the dependency is missing, so callers gate on
+    it instead of catching import errors. Spans and instruments are created
+    lazily against whatever SDK providers the embedding application installed.
+    """
 
-    return metrics.get_meter(SCOPE_NAME)
+    def __init__(
+        self,
+        scope: str = SCOPE_NAME,
+    ) -> None:
+
+        if not AVAILABLE:
+            raise RuntimeError(
+                "Opentelemetry is not available, "
+                "`opentelemetry-api` dependency is missing. "
+                "Install `binomic[otel]` instead.",
+            )
+
+        self._scope = scope
+
+        self._tracer = trace.get_tracer(self._scope)
+        self._meter = metrics.get_meter(self._scope)
+
+    def create_counter(self, name: str, unit: str) -> "Counter":
+        """Create a monotonically increasing counter instrument."""
+
+        return self._meter.create_counter(name=name, unit=unit)
+
+    def create_histogram(self, name: str, unit: str) -> "Histogram":
+        """Create a histogram instrument for value distributions."""
+
+        return self._meter.create_histogram(name=name, unit=unit)
+
+    def create_up_down_counter(self, name: str, unit: str) -> "UpDownCounter":
+        """Create a counter that can increase and decrease."""
+
+        return self._meter.create_up_down_counter(name=name, unit=unit)
+
+    def create_observable_gauge(
+        self,
+        name: str,
+        unit: str,
+        observe: Callable[[], Iterable[tuple[float, dict[str, str]]]],
+    ) -> "ObservableGauge":
+        """Create a gauge whose value is read from ``observe`` at collection.
+
+        ``observe`` returns ``(value, attributes)`` pairs, so one instrument
+        covers every queue or worker the caller tracks.
+        """
+
+        def callback(options: Any) -> list[Any]:
+            return [
+                Observation(value, attributes=attributes)
+                for value, attributes in observe()
+            ]
+
+        return self._meter.create_observable_gauge(
+            name=name,
+            callbacks=[callback],
+            unit=unit,
+        )
+
+    def start_producer_span(
+        self,
+        queue: str,
+        attributes: Mapping[str, str | None],
+    ) -> Any:
+        """Start the span that represents enqueueing into ``queue``."""
+
+        return self._tracer.start_as_current_span(
+            f"create {queue}",
+            kind=SpanKind.PRODUCER,
+            attributes=attributes,
+        )
+
+    def start_process_span(
+        self,
+        task: str,
+        carrier: Mapping[str, str] | None,
+        attributes: dict[str, str | int],
+    ) -> Any:
+        """Start the consumer span for ``task``, continuing ``carrier``.
+
+        A ``None`` or unreadable carrier yields a root span rather than
+        breaking execution.
+        """
+
+        return self._tracer.start_as_current_span(
+            f"process {task}",
+            context=self.extract_context(carrier),
+            kind=SpanKind.CONSUMER,
+            attributes=attributes,
+        )
+
+    @staticmethod
+    def capture_context() -> dict[str, str]:
+        """Serialize the current trace context into a header carrier."""
+
+        carrier: dict[str, str] = {}
+
+        try:
+            inject(carrier)
+
+        except Exception:
+            logger.debug("trace context capture failed", exc_info=True)
+
+        return {key: carrier[key] for key in _TRACE_KEYS if carrier.get(key)}
+
+    @staticmethod
+    def extract_context(carrier: Mapping[str, str] | None) -> Any:
+        """Rebuild a trace context from ``carrier``, falling back to current."""
+
+        try:
+            return extract(dict(carrier or {}))
+
+        except Exception:
+            logger.debug("trace context capture failed", exc_info=True)
+
+            return get_current()
+
+    @staticmethod
+    def mark_span_error(exc: BaseException) -> None:
+        """Record ``exc`` on the current span and mark it as error."""
+
+        try:
+            span = get_current_span()
+
+            if span.is_recording():
+                span.record_exception(exc)
+                span.set_status(Status(StatusCode.ERROR))
+
+        except Exception:
+            logger.debug("span error marking failed", exc_info=True)
 
 
-def create_counter(name: str, unit: str) -> Any:
-    """Create a counter on the global meter."""
-
-    return _meter().create_counter(name=name, unit=unit)
-
-
-def create_histogram(name: str, unit: str) -> Any:
-    """Create a histogram on the global meter."""
-
-    return _meter().create_histogram(name=name, unit=unit)
-
-
-def create_up_down_counter(name: str, unit: str) -> Any:
-    """Create an up/down counter on the global meter."""
-
-    return _meter().create_up_down_counter(name=name, unit=unit)
-
-
-def create_observable_gauge(
-    name: str,
-    unit: str,
-    observe: "Callable[[], Iterable[tuple[float, dict[str, str]]]]",
-) -> None:
-    """Register an observable gauge fed by a snapshot-producing callable."""
-
-    from opentelemetry.metrics import Observation
-
-    def callback(options: Any) -> list[Any]:
-
-        return [
-            Observation(value, attributes=attributes) for value, attributes in observe()
-        ]
-
-    _meter().create_observable_gauge(
-        name=name,
-        callbacks=[callback],
-        unit=unit,
-    )
-
-
-def start_producer_span(
-    queue: str,
-    attributes: "Mapping[str, str | int]",
-) -> Any:
-    """Open a producer span for a queue, nested in the current context."""
-
-    from opentelemetry.trace import SpanKind
-
-    return _tracer().start_as_current_span(
-        f"create {queue}",
-        kind=SpanKind.PRODUCER,
-        attributes=attributes,
-    )
-
-
-def start_process_span(
-    task: str,
-    carrier: "Mapping[str, str] | None",
-    attributes: dict[str, str | int],
-) -> Any:
-    """Open a consumer span for a task, parented to the producer context."""
-
-    from opentelemetry.trace import SpanKind
-
-    return _tracer().start_as_current_span(
-        f"process {task}",
-        context=extract_context(carrier),
-        kind=SpanKind.CONSUMER,
-        attributes=attributes,
-    )
-
-
-def capture_context() -> dict[str, str]:
-    """Capture the current trace context as carrier fields; never raises."""
-
-    if not AVAILABLE:
-        return {}
-
-    from opentelemetry.propagate import inject
-
-    carrier: dict[str, str] = {}
-
-    try:
-        inject(carrier)
-
-    except Exception:
-        logger.debug("trace context capture failed", exc_info=True)
-
-    return {key: carrier[key] for key in _TRACE_KEYS if carrier.get(key)}
-
-
-def extract_context(carrier: "Mapping[str, str] | None") -> Any:
-    """Build a context from carrier fields; falls back to the current one."""
-
-    if not AVAILABLE:
-        return None
-
-    from opentelemetry.context import get_current
-    from opentelemetry.propagate import extract
-
-    try:
-        return extract(dict(carrier or {}))
-
-    except Exception:
-        logger.debug("trace context extract failed", exc_info=True)
-
-        return get_current()
-
-
-def mark_span_error(exc: BaseException) -> None:
-    """Record an exception on the current span; never raises."""
-
-    if not AVAILABLE:
-        return
-
-    from opentelemetry.trace import Status, StatusCode, get_current_span
-
-    try:
-        span = get_current_span()
-
-        if span.is_recording():
-            span.record_exception(exc)
-            span.set_status(Status(StatusCode.ERROR))
-
-    except Exception:
-        logger.debug("span error marking failed", exc_info=True)
+otel = Telemetry() if AVAILABLE else None

@@ -1,4 +1,11 @@
-from binomic.broker import BrokerDlqCapability, DLQRecordEntry, MessageEntry
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from binomic.broker import (
+        BrokerDeadLetterCapability,
+        DeadLetterEntry,
+        MessageEntry,
+    )
 
 __all__ = ("DeadLetters",)
 
@@ -13,7 +20,7 @@ class DeadLetters:
     automatic default, and ``prune`` is the explicit on-demand trigger.
     """
 
-    def __init__(self, broker: BrokerDlqCapability, queue: str) -> None:
+    def __init__(self, broker: "BrokerDeadLetterCapability", queue: str) -> None:
 
         self._broker = broker
         self._queue = queue
@@ -27,17 +34,17 @@ class DeadLetters:
         self,
         limit: int = 50,
         cursor: str | None = None,
-    ) -> tuple[list[DLQRecordEntry], str | None]:
+    ) -> tuple[list["DeadLetterEntry"], str | None]:
         """Page through the dead letters oldest-first."""
 
         return await self._broker.dlq_list(self._queue, limit, cursor)
 
-    async def read(self, entry_id: str) -> DLQRecordEntry | None:
+    async def read(self, entry_id: str) -> "DeadLetterEntry | None":
         """Return one full record by stream entry id, or ``None``."""
 
         return await self._broker.dlq_read(self._queue, entry_id)
 
-    async def replay(self, entry_id: str) -> MessageEntry | None:
+    async def replay(self, entry_id: str) -> "MessageEntry | None":
         """Re-deliver a dead letter as a brand-new message; the record stays."""
 
         return await self._broker.dlq_replay(self._queue, entry_id)
@@ -46,8 +53,8 @@ class DeadLetters:
         """Delete dead letters older than ``retention`` seconds; return the count.
 
         The explicit counterpart of the worker's automatic sweep — same
-        primitive, invoked on demand. Deletion is irreversible, including
-        records never replayed.
+        primitive, invoked on demand. ``retention`` must be positive; deletion
+        is irreversible, including records never replayed.
         """
 
         return await self._broker.dlq_prune(self._queue, retention)

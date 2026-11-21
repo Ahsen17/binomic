@@ -9,7 +9,15 @@ __all__ = (
 
 
 class WorkerPolicy(BaseStruct):
-    """Bonimic worker policy.
+    """Settings for one worker subprocess.
+
+    ``queues`` are consumed by every worker and ``concurrency`` bounds the
+    tasks one worker executes at once. ``task_timeout`` is the total delivery
+    deadline from enqueue; ``max_attempts`` is the retry budget before the
+    message enters the DLQ. ``read_count`` and ``poll_interval`` shape the
+    fetch loop; ``heartbeat_interval`` and ``reclaim_interval`` set the
+    liveness beat and crash-recovery cadence. ``dlq_retention`` is the age
+    after which the periodic sweep deletes DLQ records (``None`` disables it).
 
     ``worker_init`` runs once per subprocess, in ``Worker.run`` before the
     event loop starts — the hook where an embedding application installs its
@@ -35,7 +43,11 @@ class WorkerPolicy(BaseStruct):
 
 
 class MasterPolicy(BaseStruct):
-    """Bonimic master policy."""
+    """Settings for the master process.
+
+    ``workers`` is how many worker subprocesses to spawn, each configured by
+    the same ``worker_policy``.
+    """
 
     workers: int
     worker_policy: WorkerPolicy

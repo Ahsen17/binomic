@@ -5,6 +5,7 @@ from .redis import RedisBroker
 if TYPE_CHECKING:
     from .protocols import Broker
 
+
 __all__ = ("BrokerFactory",)
 
 
@@ -17,19 +18,24 @@ class BrokerFactory:
         queues: list[str],
         namespace: str,
         capacity: int | None = None,
-        **config: Any,
+        **broker_config: Any,
     ) -> None:
 
         self._dsn = dsn
         self._queues = queues
         self._namespace = namespace
         self._capacity = capacity
-        self._config = config
+        self._config = broker_config
 
     def create(self) -> "Broker":
+        """Build the broker selected by the DSN scheme.
+
+        ``redis``/``rediss`` return a ``RedisBroker``; ``amqp`` is recognized
+        but not implemented; any other scheme raises ``ValueError``.
+        """
 
         match self._dsn.split(":")[0]:
-            case "redis":
+            case "redis" | "rediss":
                 return RedisBroker(
                     dsn=self._dsn,
                     queues=self._queues,

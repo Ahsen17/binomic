@@ -1,28 +1,17 @@
-import contextlib
-import importlib
 import inspect
 from collections.abc import Callable
-from pathlib import Path
-from typing import Literal, overload
+from typing import Literal, cast, overload
 
-from .register import OnDeadHook, TaskSpec
+from .types import OnDeadHook, TaskSpec
 
-
-@overload
-def task[**P, T](
-    queue: str,
-    *,
-    mode: Literal["direct"],
-    on_dead: OnDeadHook | None = None,
-) -> Callable[[Callable[P, T]], TaskSpec[P, T]]: ...
+__all__ = ("task",)
 
 
 @overload
 def task[**P, T](
     queue: str,
     *,
-    mode: Literal["delay"],
-    delay: float,
+    mode: Literal["direct"] = "direct",
     on_dead: OnDeadHook | None = None,
 ) -> Callable[[Callable[P, T]], TaskSpec[P, T]]: ...
 
@@ -50,29 +39,28 @@ def task[**P, T](
 def task[**P, T](
     queue: str,
     *,
-    mode: Literal[
-        "direct",
-        "delay",
-        "cron",
-        "interval",
-    ] = "direct",
-    delay: float | None = None,
+    mode: Literal["direct", "cron", "interval"] = "direct",
     cron: str | None = None,
     interval: float | None = None,
     on_dead: OnDeadHook | None = None,
 ) -> Callable[[Callable[P, T]], TaskSpec[P, T]]:
+    """Declare a task in ``queue`` and return its ``TaskSpec``.
 
-    if on_dead is not None and not callable(on_dead):
+    ``direct`` tasks are submitted by name and execute as soon as a worker
+    picks the message. ``cron`` and ``interval`` tasks are periodic: the
+    client registers them when its async context starts, so they take no
+    arguments and reject ``submit``. ``on_dead`` is an optional notification
+    hook, called once after the message enters the DLQ.
+    """
+
+    if on_dead is not None and not callable(cast("object", on_dead)):
         raise ValueError(
             "`on_dead` must be callable",
         )
 
-    match mode:
-        case "delay":
-            if delay is None or delay <= 0:
-                raise ValueError(
-                    "`delay` must be a positive number",
-                )
+    match str(mode):
+        case "direct":
+            pass
 
         case "cron":
             if cron is None:
@@ -86,8 +74,12 @@ def task[**P, T](
                     "`interval` must be a positive number",
                 )
 
-    def decorator(fn: Callable[P, T]) -> TaskSpec[P, T]:
+        case _:
+            raise ValueError(
+                f"Unsupported task mode `{mode}`; expected direct, cron or interval",
+            )
 
+    def decorator(fn: Callable[P, T]) -> TaskSpec[P, T]:
         if mode in ("cron", "interval"):
             sig = inspect.signature(fn)
             if len(sig.parameters.values()) > 0:
@@ -100,63 +92,9 @@ def task[**P, T](
             queue=queue,
             func=fn,
             mode=mode,
-            delay=delay,
             cron=cron,
             interval=interval,
-            on_dead=on_dead,
+            on_dead_hook=on_dead,
         )
 
     return decorator
-
-
-def autodiscover(package: str) -> list[TaskSpec]:
-    """Import every ``tasks`` module under ``package`` and collect its specs.
-
-    A tasks module is a ``tasks.py`` or ``tasks/__init__.py`` at any depth
-    below the package. A missing package raises; a module whose import fails
-    on a missing import is skipped, and any other error propagates.
-    """
-
-    try:
-        pkg = importlib.import_module(package)
-    except ModuleNotFoundError as err:
-        if err.name == package:
-            raise ValueError(f"Package `{package}` not found") from err
-        raise
-
-    pkg_paths = getattr(pkg, "__path__", None)
-    if pkg_paths is None:
-        return []
-
-    seen: set[int] = set()
-    specs: list[TaskSpec] = []
-
-    for raw_path in pkg_paths:
-        pkg_root = Path(raw_path).resolve()
-        if not pkg_root.exists():
-            continue
-
-        files: list[Path] = []
-        files.extend(pkg_root.rglob("tasks.py"))
-        files.extend(pkg_root.rglob("tasks/__init__.py"))
-
-        for path in files:
-            rel_path = path.relative_to(pkg_root)
-            parts = list(rel_path.parts)
-
-            if parts[-1] == "__init__.py":
-                module_parts = [package, *parts[:-1]]
-            else:
-                module_parts = [package, *parts[:-1], path.stem]
-
-            module_name = ".".join(module_parts)
-
-            with contextlib.suppress(ImportError):
-                module = importlib.import_module(module_name)
-
-                for obj in vars(module).values():
-                    if isinstance(obj, TaskSpec) and id(obj) not in seen:
-                        seen.add(id(obj))
-                        specs.append(obj)
-
-    return specs

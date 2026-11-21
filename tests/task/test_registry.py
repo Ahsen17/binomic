@@ -93,7 +93,6 @@ class TestTaskSpec:
         spec = TaskSpec(name="alpha", queue="default", func=noop, mode="direct")
 
         assert spec.mode == "direct"
-        assert spec.delay is None
         assert spec.cron is None
         assert spec.interval is None
 

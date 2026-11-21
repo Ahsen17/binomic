@@ -9,7 +9,6 @@ import anyio
 import pytest
 from pytest_mock import MockerFixture
 
-from binomic.otel import telemetry
 from binomic.worker import (
     Master,
     MasterPolicy,
@@ -114,7 +113,7 @@ class TestMaster:
 
         assert master._presence.presence() == {"worker-0": 0.0}
 
-        worker_side = master._presence._cells["worker-0"]
+        worker_side = master._presence._slaves["worker-0"]
         worker_side.value = 42.0
 
         assert master._presence.presence()["worker-0"] == 42.0
@@ -131,7 +130,7 @@ class TestMaster:
         mocker.patch("binomic.worker.master.get_context", return_value=fake_ctx)
 
         master._run_proc("worker-0")
-        master._presence._cells["worker-0"].value = 42.0
+        master._presence._slaves["worker-0"].value = 42.0
 
         master._run_proc("worker-0")
 
@@ -366,16 +365,17 @@ class TestMasterTelemetry:
 
         assert master._restarts is None
 
-    def test_enabled_requires_the_extra(
+    def test_enabled_without_the_extra_builds_no_instruments(
         self,
         make_master: Callable[..., Master],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
 
-        monkeypatch.setattr(telemetry, "AVAILABLE", False)
+        monkeypatch.setattr("binomic.worker.master.otel", None)
 
-        with pytest.raises(RuntimeError, match=r"binomic\[otel\]"):
-            make_master(policy=BUSY_OTEL_POLICY)
+        master = make_master(policy=BUSY_OTEL_POLICY)
+
+        assert master._restarts is None
 
     async def test_a_stale_worker_counts_a_heartbeat_restart(
         self,
@@ -471,11 +471,17 @@ class TestMasterTelemetry:
         await master.close()
 
         metrics_data = metric_reader.get_metrics_data()
-        assert metrics_data is not None
 
+        # ``close()`` records nothing, so the reader may hold no data at all;
+        # either way no restart point may mention this consumer.
+        restarts = (
+            metric_points(metrics_data, "binomic.worker.restarts")
+            if metrics_data is not None
+            else []
+        )
         assert not [
             point
-            for point in metric_points(metrics_data, "binomic.worker.restarts")
+            for point in restarts
             if point.attributes["binomic.worker.consumer"] == "consumer-close"
         ]
 
@@ -491,7 +497,7 @@ class TestMasterTelemetry:
         # directly instead of through the shared session meter provider.
         registered: list[dict[str, Any]] = []
         mocker.patch(
-            "binomic.worker.master.create_observable_gauge",
+            "binomic.worker.master.otel.create_observable_gauge",
             side_effect=lambda **kwargs: registered.append(kwargs),
         )
 

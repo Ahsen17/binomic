@@ -1,42 +1,24 @@
 import pytest
 
-from binomic.base.exceptions import (
-    BinomicError,
-    BuiltinError,
-    ConvertError,
-    DeserializationError,
-    SerializationError,
-)
+from binomic.base import BinomicError
+from binomic.broker import DeadLetterEntryNotFoundError, QueueCapacityError
+from binomic.task import DuplicateTaskError, TaskNotFoundError
 
 
-class TestExceptionHierarchy:
-    def test_serialization_error_is_binomic_error(self) -> None:
+class TestBinomicError:
+    def test_is_an_exception(self) -> None:
 
-        assert issubclass(SerializationError, BinomicError)
-        assert issubclass(SerializationError, Exception)
+        assert issubclass(BinomicError, Exception)
 
-    def test_deserialization_error_is_binomic_error(self) -> None:
+    @pytest.mark.parametrize(
+        "error",
+        [
+            DuplicateTaskError,
+            TaskNotFoundError,
+            QueueCapacityError,
+            DeadLetterEntryNotFoundError,
+        ],
+    )
+    def test_domain_errors_share_the_base(self, error: type[BinomicError]) -> None:
 
-        assert issubclass(DeserializationError, BinomicError)
-        assert issubclass(DeserializationError, Exception)
-
-    def test_builtin_error_is_binomic_error(self) -> None:
-
-        assert issubclass(BuiltinError, BinomicError)
-        assert issubclass(BuiltinError, Exception)
-
-    def test_convert_error_is_binomic_error(self) -> None:
-
-        assert issubclass(ConvertError, BinomicError)
-        assert issubclass(ConvertError, Exception)
-
-    def test_catchable_through_base_class(self) -> None:
-
-        with pytest.raises(BinomicError):
-            raise DeserializationError("bad payload")
-
-        with pytest.raises(BinomicError):
-            raise ConvertError("bad dict")
-
-        with pytest.raises(BinomicError):
-            raise BuiltinError("bad builtins")
+        assert issubclass(error, BinomicError)

@@ -7,9 +7,9 @@ import anyio
 
 from binomic.broker import Message, RedisBroker
 from binomic.worker import Worker, WorkerPolicy
-from binomic.worker.presence import SubprocessPresence
+from binomic.worker.presences import SlavePresence
 
-SAMPLE_MODULE = "binomic"  # the package holding the shipped sample tasks
+SAMPLE_MODULE = "tests"  # the package holding the unit-test sample tasks
 
 
 class TestWorkerIdentity:
@@ -132,7 +132,7 @@ class TestWorkerHeartbeat:
             module_name=SAMPLE_MODULE,
             consumer="test-worker",
             policy=policy,
-            presence=SubprocessPresence(cell),
+            presence=SlavePresence(cell),
         )
         terminate = anyio.Event()
 
@@ -201,7 +201,7 @@ class TestQueueGauges:
             captured[name] = observe
 
         monkeypatch.setattr(
-            "binomic.worker.worker.create_observable_gauge",
+            "binomic.worker.worker.otel.create_observable_gauge",
             fake_gauge,
         )
 
@@ -358,6 +358,44 @@ class TestDlqPruning:
                 done = True
 
             assert done
+
+        finally:
+            await worker.close()
+
+
+class TestReclaimPolling:
+    async def test_polls_the_handler_reclaim_on_the_interval(
+        self,
+        fake_broker_backend: None,
+        make_worker: Callable[..., Worker],
+        mocker: Any,
+    ) -> None:
+
+        policy = WorkerPolicy(
+            queues=["default"],
+            concurrency=1,
+            reclaim_interval=0.0,
+            poll_interval=0.01,
+        )
+        worker = make_worker(module_name=SAMPLE_MODULE, policy=policy)
+
+        try:
+            await worker.start()
+            handler = worker._handler
+            assert handler is not None
+
+            reclaim = mocker.patch.object(
+                handler,
+                "reclaim",
+                new_callable=mocker.AsyncMock,
+            )
+
+            # Drive the real loop; the reclaim poller is a task started inside
+            # ``arun``, so this is the only way to exercise the wiring.
+            with anyio.move_on_after(0.2):
+                await worker.arun()
+
+            reclaim.assert_awaited()
 
         finally:
             await worker.close()

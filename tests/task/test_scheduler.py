@@ -125,8 +125,8 @@ class TestDelay:
     async def test_validation_belongs_to_call_sites_not_the_scheduler(
         self,
     ) -> None:
-        """The scheduler is generic: semantics (positive delay etc.) are the
-        decorator's and submit's business."""
+        """The scheduler is generic: task semantics belong to the decorator;
+        the scheduler schedules whatever timing value a caller passes."""
 
         instance = TaskScheduler()
         instance.start()

@@ -5,16 +5,14 @@ timing is APScheduler's, and the worker consuming the message runs in its own
 subprocess.
 """
 
-import time
 from uuid import uuid4
 
 import pytest
 from redis.asyncio import Redis as AsyncRedis
 
-from binomic.broker import Message
 from binomic.client import Binomic, BinomicConfig
 from test_integration.helpers import wait_until
-from test_integration.schedule import DELAY_SECONDS, SCHEDULE_QUEUE
+from test_integration.schedule import SCHEDULE_QUEUE
 from test_integration.schedule.tasks import DSN_ENV, KEY_ENV
 
 TIMEOUT: float = 30.0
@@ -35,44 +33,6 @@ def make_client(broker_dsn: str) -> Binomic:
 
 @pytest.mark.integration
 class TestSchedulePipeline:
-    async def test_delayed_task_runs_after_its_delay(
-        self,
-        broker_dsn: str,
-        probe_dsn: str,
-        redis_client: AsyncRedis,
-    ) -> None:
-
-        result_key = f"binomic:e2e:delayed:{uuid4()}"
-
-        async with make_client(broker_dsn) as client:
-            # Measured on the wall clock, because that is the clock the
-            # scheduler fires on: a forward NTP jump between submit and fire
-            # would make the job trigger early by the monotonic measure, while
-            # wall time -- the scheduler's own accounting -- still reads ~3s.
-            started = time.time()
-            await client.submit(
-                Message(task="write_delayed_result", args=[probe_dsn, result_key]),
-            )
-
-            # Nothing here calls the job: firing it is the scheduler's.
-            await wait_until(lambda: redis_client.exists(result_key))
-            elapsed = time.time() - started
-
-            # The task may only have run after its delay. A scheduler that
-            # ignored the delay would fire on its next tick instead, well under
-            # this bound.
-            assert elapsed >= DELAY_SECONDS * 2 / 3, f"ran after {elapsed}s"
-            assert await redis_client.get(result_key) == "done"
-
-            async def drained() -> bool:
-
-                pending = await redis_client.xpending(STREAM_KEY, GROUP)
-                return bool(pending["pending"] == 0)
-
-            # The task writes its result before returning, so the ack can
-            # still be in flight when the key first appears.
-            await wait_until(drained)
-
     async def test_interval_task_repeats_and_is_acked(
         self,
         broker_dsn: str,

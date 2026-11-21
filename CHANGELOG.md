@@ -1,3 +1,40 @@
+## [0.3.3] - 2026-11-21
+
+### 🚜 Refactor
+
+- [**breaking**] Rework task discovery, worker supervision and broker surfaces
+
+### 📚 Documentation
+
+- Align guides and READMEs with the three-mode API
+
+### 🧪 Testing
+
+- Align unit suites with the refactored public API
+- Drop the delay mode from the integration schedule pipeline
+
+### 💼 Other
+
+- Run the Sentinel HA suite in GitHub Actions
+## [0.3.2] - 2026-11-01
+
+### 🚀 Features
+
+- *(ha)* Add Redis HA verification assets and integration suites
+- *(client)* Expose dead letters through a DeadLetters handle
+- *(worker)* Prune expired DLQ records on a retention schedule
+
+### 📚 Documentation
+
+- Record Redis HA topology compatibility conclusions
+- Document DLQ operations tooling and the retention policy
+- Update changelog
+- Fix delimiter row of the DLQ management table
+- Update CN desc
+
+### ⚙️ Miscellaneous Tasks
+
+- Upgrade to v0.3.2
 ## [0.3.1] - 2026-10-29
 
 ### 🚀 Features

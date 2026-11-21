@@ -25,8 +25,7 @@ the fleet and reclaims work from dead consumers. Message payloads are serialized
 ## Features
 
 - **Declarative tasks**: the `@task()` decorator with `direct` (immediate),
-  `delay` (deferred), `cron` (cron expression), and `interval` (fixed interval)
-  modes
+  `cron` (cron expression), and `interval` (fixed interval) modes
 - **Redis Streams broker**: reliable delivery built on consumer groups and the
   PEL, with `xautoclaim`-based reclaim of messages from dead consumers
 - **Retries and dead-letter queue**: failed messages are redelivered after a
@@ -78,10 +77,6 @@ def example(index: int = 0) -> None:
     print(f"[{index}] Current time: {time.time()}")
 
 
-@task("default", mode="delay", delay=10)  # runs after a 10-second delay
-def delayed() -> None: ...
-
-
 @task("default", mode="cron", cron="*/5 * * * *")  # runs every 5 minutes
 def periodic() -> None: ...
 
@@ -123,9 +118,10 @@ async with binomic:
 Which stream a message lands in is decided by the queue in the task
 declaration (a message does not specify one), and `enqueued_at` is stamped by
 the client-side broker at enqueue time (not onto the `Message`), so it needs no manual
-assignment. `submit` supports
-only the `direct` and `delay` modes: `cron` and `interval` tasks are registered
-automatically when the client starts, and calling `submit` on them raises
+assignment. `submit` supports only the `direct` mode and returns the broker's
+`MessageEntry` (`None` when an internal failure degrades the enqueue): `cron`
+and `interval` tasks are registered automatically when the client starts, and
+calling `submit` on them raises
 `ValueError`. The worker tuning knobs are `BinomicConfig` fields too:
 `task_timeout` / `read_count` / `poll_interval` / `heartbeat_interval` /
 `reclaim_interval` — see the [reliability guide](docs/en/guide/reliability.md).
@@ -165,7 +161,6 @@ parameter.
 ```mermaid
 flowchart TD
     P[Producer<br>Binomic client] -->|submit: direct| B[RedisBroker<br>Redis Streams]
-    P -->|submit: delay| S[TaskScheduler]
     P -.->|registered at startup: cron / interval| S
     S -->|enqueued when due| B
     B -->|consumer group / PEL| W1[Worker 0<br>subprocess]
@@ -178,14 +173,13 @@ flowchart TD
 ```
 
 - **Producer**: `Binomic.submit` creates a broker via `BrokerFactory` based on
-  the broker DSN scheme and enqueues the message; `delay` tasks are handed to
-  the scheduler for a deferred enqueue, while `cron` and `interval` tasks do
-  not go through `submit` and are registered as periodic jobs when the client
-  starts.
+  the broker DSN scheme and enqueues the message; `cron` and `interval` tasks
+  do not go through `submit` and are registered as periodic jobs when the
+  client starts.
 - **Scheduler**: `TaskScheduler` creates the matching trigger for each of the
-  `delay` / `cron` / `interval` modes and enqueues through the same path as
-  `direct` once a job is due. Each worker holds one of its own too, carrying
-  the backoff of a failed redelivery.
+  `cron` / `interval` modes and enqueues through the same path as `direct`
+  once a job is due. Each worker holds one of its own too, carrying the
+  backoff of a failed redelivery.
 - **Broker**: `RedisBroker` writes messages to Redis Streams: per-queue
   `:stream` (entry ids only) + `:hash` (full envelopes), plus `:context`
   (trace context by message id, swept on ack/dead) when telemetry is enabled;
@@ -220,12 +214,11 @@ checked box means done. For what has landed, see
   `binomic.worker.restarts` counter (with the `binomic.worker.reason`
   attribute), emitted by the supervision loop in the client process for both
   alerting and audit; orderly shutdown is not counted as restarts
-- [x] **P0 · Persisted delayed jobs** -- adjudicated: **not built**. `delay`
-  stays as an in-process convenience with **non-durable** semantics
-  (submissions live in the client process's in-memory scheduler and are lost
-  on exit; see the [scheduling guide](docs/guide/scheduling.md)); delayed
-  delivery that survives restarts will only be built once a real use case
-  shows up, as Redis-side queueing
+- [x] **P0 · Delayed task mode** -- adjudicated: **removed**. Task modes are
+  now `direct` / `cron` / `interval`; to run something later, wait inside the
+  task function or schedule it with the public `TaskScheduler.delay()`
+  (in-process and non-durable; see the
+  [scheduling guide](docs/en/guide/scheduling.md))
 - [x] **P0 · Bounded storage** -- ack/dead/reclaim `XDEL` terminal entries;
   radix-tree nodes are released once fully deleted, so live queues are a
   sliding window that does not grow with history (verified empirically). The
@@ -234,7 +227,7 @@ checked box means done. For what has landed, see
 - [x] **P1 · DLQ operations tooling** -- a standardized management surface for
   replay, inspection and retention: `await client.dead_letters(queue)` returns
   a queue-bound `DeadLetters` operations handle (depth / list / read / replay /
-  prune; custom brokers are probed via `BrokerDlqCapability`); replays redeliver
+  prune; custom brokers are probed via `BrokerDeadLetterCapability`); replays redeliver
   to the original queue as brand-new messages (fresh UUID, `attempt` reset to 1,
   source record kept); the retention field `dlq_retention` (7 days by default,
   `None` disables) drives the worker's periodic pruning of expired records
@@ -250,15 +243,16 @@ checked box means done. For what has landed, see
   and replayable
 - [ ] **P2 · Large-scale stability testing** -- soak tests across multiple
   instances, Redis flaps and network partitions
-- [x] **P2 · Redis HA compatibility** -- verified the eight broker scripts
-  (6 operations + observe/context) and consumer-group semantics under
+- [x] **P2 · Redis HA compatibility** -- verified the eight broker scripts that
+  existed at verification time (6 operations + observe/context) and
+  consumer-group semantics under
   Sentinel/Cluster: Sentinel is usable (data-plane semantics equivalent to a
   standalone Redis, connection brought by the caller), Cluster is structurally
   unsupported (keyless script routing, multi-key scripts across slots,
   client-rejected multi-queue `XREADGROUP`). Verification assets live in
   `assets/` and `test_integration/ha/` (`pytest -m ha`); conclusions in the
-  reliability guide. The `dlq_prune` script added afterwards is of the same
-  shape (one multi-key script), so the Cluster constraints are unchanged
+  reliability guide. The later `dlq_prune` script has the same multi-key shape,
+  so the Cluster constraints are unchanged.
 - [x] **P2 · Producer-side capacity limit** -- `BinomicConfig.capacity` caps
   every queue's unacknowledged total (the stream length); submissions onto a
   full queue are rejected immediately: `direct` raises `QueueCapacityError`,

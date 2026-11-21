@@ -27,10 +27,6 @@ def example(index: int = 0) -> None:
     print(f"[{index}] Current time: {time.time()}")
 
 
-@task("default", mode="delay", delay=10)  # 延迟 10 秒执行
-def delayed() -> None: ...
-
-
 @task("default", mode="cron", cron="*/5 * * * *")  # 每 5 分钟执行
 def periodic() -> None: ...
 
@@ -40,11 +36,11 @@ def poll() -> None: ...
 ```
 
 第一个位置参数是**队列名**，需与客户端配置中的 `queues` 对应。任务以**函数名原样**
-注册（区分大小写，上例中为 `example`、`delayed`、`periodic`、`poll`），投递时用它来
+注册（区分大小写，上例中为 `example`、`periodic`、`poll`），投递时用它来
 指定要执行的任务。
 
 `cron` 与 `interval` 两种周期模式的函数**不能带参数** —— 周期触发时没有调用参数可传，
-声明时会直接抛 `ValueError`。四种模式的完整说明见[任务模式与调度](scheduling.md)。
+声明时会直接抛 `ValueError`。三种模式的完整说明见[任务模式与调度](scheduling.md)。
 
 ## 启动并投递
 
@@ -80,7 +76,7 @@ async with binomic:
 - Redis key 前缀与消费者组名（`namespace`）由客户端与 Worker 各自按 `module_name`
   在内部派生，不是用户面参数：同一 `module_name` 的客户端与 Worker 自动共用命名空间；
 - `enqueued_at` 无需手工赋值：它在**实际投递时**由客户端进程内的 broker 在
-  enqueue 时写入时间戳（不是 `Message` 上的字段），延迟与周期任务也因此每次投递都拿到
+  enqueue 时写入时间戳（不是 `Message` 上的字段），周期任务也因此每次投递都拿到
   当前时间；
 - 可观测性由 `otel_enabled` 开启、`worker_init` 负责在 worker 子进程内安装 SDK，
   详见[可观测性](observability.md)。

@@ -12,8 +12,8 @@ are UUIDv7.
 ## Features
 
 - **Declarative tasks**: the `@task()` decorator with `direct` (immediate),
-  `delay` (deferred), `cron` (cron expression), and `interval` (fixed interval)
-  modes; see [Task modes and scheduling](guide/scheduling.md)
+  `cron` (cron expression), and `interval` (fixed interval) modes; see
+  [Task modes and scheduling](guide/scheduling.md)
 - **Redis Streams broker**: reliable delivery based on consumer groups and the
   PEL, with `xautoclaim` reclaiming messages from lost consumers
 - **Retries and dead-letter queue**: failed messages are redelivered after a

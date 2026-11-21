@@ -3,7 +3,6 @@
 ```{mermaid}
 flowchart TD
     P[Producer<br>Binomic client] -->|submit: direct| B[RedisBroker<br>Redis Streams]
-    P -->|submit: delay| S[TaskScheduler]
     P -.->|registered at startup: cron / interval| S
     S -->|enqueued when due| B
     B -->|consumer group / PEL| W1[Worker 0<br>subprocess]
@@ -18,14 +17,13 @@ flowchart TD
 ## Components
 
 - **Producer**: `Binomic.submit` branches on the task's mode — a `direct` task
-  is enqueued immediately through the broker that `BrokerFactory` creates; a
-  `delay` task is handed to the scheduler for a deferred enqueue; `cron` and
-  `interval` tasks **do not go through** `submit` (calling it on them raises
-  `ValueError`) and are instead registered as periodic jobs when the client
-  starts. Which stream a message lands in comes from the task declaration
-  (`TaskSpec.queue`), not from the caller.
+  is enqueued immediately through the broker that `BrokerFactory` creates;
+  `cron` and `interval` tasks **do not go through** `submit` (calling it on
+  them raises `ValueError`) and are instead registered as periodic jobs when
+  the client starts. Which stream a message lands in comes from the task
+  declaration (`TaskSpec.queue`), not from the caller.
 - **Scheduler**: `TaskScheduler` creates the matching trigger for each of the
-  `delay` / `cron` / `interval` modes, and enqueues through the same path as
+  `cron` / `interval` modes, and enqueues through the same path as
   `direct` once a job is due. Each worker holds a `TaskScheduler` of its **own**
   (unrelated to the client's), which carries the backoff of a failed
   redelivery. See [Task modes and scheduling](scheduling.md).

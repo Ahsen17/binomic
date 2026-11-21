@@ -3,7 +3,6 @@
 ```{mermaid}
 flowchart TD
     P[生产者<br>Binomic 客户端] -->|submit：direct| B[RedisBroker<br>Redis Streams]
-    P -->|submit：delay| S[TaskScheduler]
     P -.->|启动时注册：cron / interval| S
     S -->|到期投递| B
     B -->|consumer group / PEL| W1[Worker 0<br>子进程]
@@ -18,11 +17,10 @@ flowchart TD
 ## 组件
 
 - **Producer**：`Binomic.submit` 按任务的模式分支处理 —— `direct` 任务立即经
-  `BrokerFactory` 创建代理并 `enqueue` 消息；`delay` 任务交给调度器延后投递；
-  `cron` 与 `interval` 任务**不经** `submit`（对其调用会抛 `ValueError`），而是在
-  客户端启动时按声明注册为周期作业。消息进哪条 Stream 取自任务声明
-  （`TaskSpec.queue`），不由调用方指定。
-- **Scheduler**：`TaskScheduler` 为 `delay` / `cron` / `interval` 三种模式创建对应的
+  `BrokerFactory` 创建代理并 `enqueue` 消息；`cron` 与 `interval` 任务**不经**
+  `submit`（对其调用会抛 `ValueError`），而是在客户端启动时按声明注册为周期作业。
+  消息进哪条 Stream 取自任务声明（`TaskSpec.queue`），不由调用方指定。
+- **Scheduler**：`TaskScheduler` 为 `cron` / `interval` 两种周期模式创建对应的
   触发器，到期后走与 `direct` 相同的入队路径。每个 Worker **自己**也持有一个
   `TaskScheduler`（与客户端那个互不相干），专门承担失败重投的退避延时。
   详见[任务模式与调度](scheduling.md)。

@@ -32,8 +32,9 @@ config = BinomicConfig(
 也不在 Redis 中写 trace 上下文，行为与未引入可观测性时完全一致。structlog 日志
 **不**受该开关控制，始终按配置输出。
 
-启用了却未安装 extra 时，构造 `Binomic` 会立即抛出带安装提示的 `RuntimeError`
-（fail-fast），不会静默降级；standalone `Master` 在构造时同样校验。
+未安装 extra 时，模块级 `binomic.otel.otel` 为 `None`，启用 `otel_enabled` 的
+`Binomic` / `Master` / `Worker` 会跳过全部遥测调用，不做任何 OTel 发射（日志照常）。
+直接构造 `Telemetry()` 会抛出带安装提示的 `RuntimeError`，便于显式校验依赖。
 
 ### Litestar
 
@@ -80,7 +81,7 @@ trace.set_tracer_provider(provider)
 span，并把当前 W3C trace context（`traceparent`、`tracestate`、`baggage`）写入
 broker 的独立上下文存储（Redis 实现为 `{namespace}:{queue}:context`，按消息 id
 存放）—— 消息包装（`Message` / `MessageEntry`）本身不携带任何遥测字段。direct
-任务在本次 enqueue 时写入；delay 任务在提交时捕获上下文、到期投递时写入。
+每次投递（`direct` 提交或 `cron` / `interval` 的每轮触发）都在本次 enqueue 时写入。
 
 ### Worker 子进程
 
@@ -212,5 +213,6 @@ root span，队列深度 gauge 不注册。客户端也只在 broker 实现该�
 - worker 子进程各自独立上报，指标是按进程序列，聚合口径由后端决定；
 - 上下文捕获/读取、span 错误标注与 gauge 回调的失败会被忽略并降级为 debug
   日志，不影响投递、执行或 ack；trace/metric 的创建与 span 开启依赖 OTel API
-  的不抛异常契约，并由 `ensure_available()` 在启用时前置校验；
-- `ensure_available()` 是唯一故意抛错的入口：启用却未安装 extra 时立即失败。
+  的不抛异常契约；
+- 未安装 extra 时 `otel` 为 `None`，所有调用点跳过遥测；`Telemetry()` 构造是遥测
+  模块中唯一故意抛错的入口。

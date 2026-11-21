@@ -58,12 +58,10 @@ rejection). The two submission paths behave differently:
 
 - `direct`: `submit` lets `QueueCapacityError` propagate to the caller, who
   decides between retrying and giving up;
-- `delay` / `cron` / `interval`: delivery happens inside a scheduler job with
-  no channel back to a caller — a rejection is logged as a warning, counted
+- `cron` / `interval`: delivery happens inside a scheduler job with no channel
+  back to a caller — a rejection is logged as a warning, counted
   (`binomic.task.rejections`, gated by `otel_enabled`) and that delivery is
-  dropped; a periodic task simply comes back next round, while a delayed
-  message is lost (consistent with the adjudication that delayed jobs are
-  non-durable).
+  dropped; a periodic task simply comes back next round.
 
 Retry and reclaim re-entries keep the depth constant (each script adds the new
 entry before removing the old one), so system-recovery paths never consume
@@ -78,8 +76,9 @@ cut the depth and defeat the limit.
 
 `task_timeout` bites in two places, both meaning "total delivery deadline":
 
-- **execution timeout**: a task that runs longer than `task_timeout` is
-  cancelled — the message goes **straight to the DLQ, with no retry**;
+- **execution timeout**: execution receives the **remaining budget**
+  (`task_timeout` minus the time already spent queued); when it runs out the
+  task is cancelled — the message goes **straight to the DLQ, with no retry**;
 - **staleness**: a message whose `enqueued_at` is older than `task_timeout`
   (it queued too long) is not executed and goes straight to the DLQ.
 
@@ -98,7 +97,7 @@ preserved whole: inspectable and replayable.
 
 ### DLQ management surface
 
-A broker implementing `BrokerDlqCapability` (the built-in `RedisBroker` does)
+A broker implementing `BrokerDeadLetterCapability` (the built-in `RedisBroker` does)
 exposes inspection, replay and pruning methods. The client does not mirror
 them directly: `await client.dead_letters(queue)` resolves the broker and
 probes the capability (raising `NotImplementedError` when the broker lacks
@@ -113,9 +112,9 @@ periodic sweep (see "Retention") is the automatic default; the handle's
 | `dead_letters.list(limit=50, cursor=None)` | `dlq_list(...)` | Pages oldest-first, returning `(records, next_cursor)`; the cursor is an exclusive bound, so pages never repeat or skip |
 | `dead_letters.read(entry_id)` | `dlq_read(...)` | One full record by stream entry id, or `None` |
 | `dead_letters.replay(entry_id)` | `dlq_replay(...)` | Replay (semantics below) |
-| `dead_letters.prune(retention)` | `dlq_prune(...)` | Delete records that entered the DLQ more than `retention` seconds ago; same primitive as the worker's sweep, triggered on demand |
+| `dead_letters.prune(retention)` | `dlq_prune(...)` | Delete records that entered the DLQ more than `retention` seconds ago (`retention` must be positive); same primitive as the worker's sweep, triggered on demand |
 
-Records come back as `DLQRecordEntry` (subclassing `MessageEntry`): `id` (the
+Records come back as `DeadLetterEntry` (subclassing `MessageEntry`): `id` (the
 DLQ stream entry id — the handle for replays and deletion), `queue`,
 `message` (the original message, with its terminal `attempt`), `enqueued_at`
 (the last delivery stamp), plus `dead_at` (when the message entered the DLQ,
@@ -135,7 +134,7 @@ message**:
   execution — whether and how often to replay is the caller's judgment;
 - a full target queue raises `QueueCapacityError` (same as `submit`); an
   unknown entry (including one already pruned) raises
-  `DLQEntryNotFoundError`.
+  `DeadLetterEntryNotFoundError`.
 
 ### Retention (automatic cleanup)
 
@@ -249,9 +248,10 @@ are the conclusions of the Sentinel / Cluster compatibility verification
 
 ### Sentinel: usable (you bring the connection)
 
-Data-plane semantics are fully equivalent to a standalone Redis: all 8 broker
-scripts and the consumer-group semantics passed against the Sentinel-resolved
-primary. The framework ships no Sentinel wiring; resolve the primary with
+Data-plane semantics are fully equivalent to a standalone Redis: the 8 broker
+scripts that existed at verification time, and the consumer-group semantics,
+passed against the Sentinel-resolved primary (the later `dlq_prune` script has
+the same multi-key shape and does not change the conclusion). The framework ships no Sentinel wiring; resolve the primary with
 redis-py's `Sentinel` and inject it:
 
 ```python

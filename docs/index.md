@@ -8,9 +8,8 @@ Binomic 以装饰器声明任务，以 Redis Streams 投递消息，由多进程
 
 ## 特性
 
-- **声明式任务**：`@task()` 装饰器，支持 `direct`（立即）、`delay`（延迟）、
-  `cron`（cron 表达式）、`interval`（固定间隔）四种模式，详见
-  [任务模式与调度](guide/scheduling.md)
+- **声明式任务**：`@task()` 装饰器，支持 `direct`（立即）、`cron`（cron 表达式）、
+  `interval`（固定间隔）三种模式，详见[任务模式与调度](guide/scheduling.md)
 - **Redis Streams 消息代理**：基于消费者组与 PEL 的可靠投递，支持通过
   `xautoclaim` 回收失联消费者的消息
 - **失败重试与死信队列**：失败的消息按 `max_attempts`（默认 3）退避重投；

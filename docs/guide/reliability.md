@@ -44,10 +44,9 @@
 
 - `direct`：`submit` 将 `QueueCapacityError` 原样抛给调用方，由调用方决定重试
   或放弃；
-- `delay` / `cron` / `interval`：投递发生在调度作业内部、没有调用方通道，被拒时
-  记录 warning 日志、计数（`binomic.task.rejections`，受 `otel_enabled` 门控）并
-  放弃该次投递；周期任务下一轮自然重试，delay 任务该条消息即告丢失（与延迟任务
-  非持久的既定裁决一致）。
+- `cron` / `interval`：投递发生在调度作业内部、没有调用方通道，被拒时记录 warning
+  日志、计数（`binomic.task.rejections`，受 `otel_enabled` 门控）并放弃该次投递；
+  周期任务下一轮自然重试。
 
 retry 与 reclaim 的重入前后深度不变（同脚本内先加新、后删旧），因此系统恢复
 路径永远不占容量、也不会被容量拒绝。多实例共享同一 Redis 时，计数为全局合计。
@@ -59,7 +58,8 @@ retry 与 reclaim 的重入前后深度不变（同脚本内先加新、后删�
 
 `task_timeout` 在两处生效，语义都是「投递总时限」：
 
-- **执行超时**：任务执行超过 `task_timeout` 被取消——消息**直接进 DLQ，不重试**；
+- **执行超时**：任务拿到的是**剩余预算**（`task_timeout` 减去排队已耗时），预算耗尽
+  即被取消——消息**直接进 DLQ，不重试**；
 - **超龄**：消息的 `enqueued_at` 距今已超过 `task_timeout`（排队太久）——不执行，
   直接进 DLQ。
 
@@ -75,7 +75,7 @@ retry 与 reclaim 的重入前后深度不变（同脚本内先加新、后删�
 
 ### DLQ 管理面
 
-实现了 `BrokerDlqCapability` 的 broker（内置 `RedisBroker` 即是）提供检查、重放
+实现了 `BrokerDeadLetterCapability` 的 broker（内置 `RedisBroker` 即是）提供检查、重放
 与清理方法。client 不直接暴露这些方法：`await client.dead_letters(queue)` 完成
 broker 解析与能力探测（broker 不支持该能力时抛 `NotImplementedError`），返回
 绑定该队列的 **`DeadLetters` 操作句柄**，检查、重放与按需清理经句柄进行；
@@ -88,9 +88,9 @@ worker 的周期清理（见「保留策略」）是自动默认，句柄的 `pr
 | `dead_letters.list(limit=50, cursor=None)` | `dlq_list(...)` | 按进入顺序分页，返回 `(记录列表, 下一页游标)`；游标是排他边界，翻页不重不漏 |
 | `dead_letters.read(entry_id)` | `dlq_read(...)` | 按条目 id 读取单条完整记录，不存在返回 `None` |
 | `dead_letters.replay(entry_id)` | `dlq_replay(...)` | 重放（语义见下） |
-| `dead_letters.prune(retention)` | `dlq_prune(...)` | 删除进入 DLQ 超过 `retention` 秒的记录；与 worker 周期清理共用同一原语，此处按需触发 |
+| `dead_letters.prune(retention)` | `dlq_prune(...)` | 删除进入 DLQ 超过 `retention` 秒的记录（`retention` 须为正数）；与 worker 周期清理共用同一原语，此处按需触发 |
 
-记录以 `DLQRecordEntry` 返回（继承 `MessageEntry`）：`id`（DLQ stream 条目 id，是
+记录以 `DeadLetterEntry` 返回（继承 `MessageEntry`）：`id`（DLQ stream 条目 id，是
 重放与删除的定位符）、`queue`、`message`（原消息，含终态 `attempt`）、`enqueued_at`
 （最后一次投递时间戳），外加 `dead_at`（进入 DLQ 的时刻，由条目 id 前缀的毫秒时间戳
 派生，不占用存储）。
@@ -104,7 +104,7 @@ worker 的周期清理（见「保留策略」）是自动默认，句柄的 `pr
 - **源记录保留**：重放不删除 DLQ 记录，它保留「这条消息曾被重放过」的痕迹；
 - 同一条目可以重复重放，每次都产生一次新的执行——是否重放、重放几次由调用方判断；
 - 目标队列已满时抛 `QueueCapacityError`（与 `submit` 一致）；条目不存在（含已被
-  清理）时抛 `DLQEntryNotFoundError`。
+  清理）时抛 `DeadLetterEntryNotFoundError`。
 
 ### 保留策略（自动清理）
 
@@ -195,8 +195,9 @@ payload 的完整性由 broker 层把守：`acquire` / `reclaim` 遇到读不出
 
 ### Sentinel：可用（连接由使用方建立）
 
-数据面语义与单机完全等价：8 个 broker 脚本与消费者组语义在 Sentinel 解析出的
-主节点上全部实测通过。框架不内置 Sentinel 连接；使用方以 `redis-py` 的
+数据面语义与单机完全等价：验证时已存在的 8 个 broker 脚本与消费者组语义在
+Sentinel 解析出的主节点上全部实测通过（后加入的 `dlq_prune` 与既有脚本同为多 key
+形态，未改变结论）。框架不内置 Sentinel 连接；使用方以 `redis-py` 的
 `Sentinel` 解析主节点客户端后自行接入：
 
 ```python

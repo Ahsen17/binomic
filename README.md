@@ -22,8 +22,8 @@ Binomic 是一个自定义异步任务框架：以装饰器声明任务，以 Re
 
 ## 特性
 
-- **声明式任务**：`@task()` 装饰器，支持 `direct`（立即）、`delay`（延迟）、
-  `cron`（cron 表达式）、`interval`（固定间隔）四种模式
+- **声明式任务**：`@task()` 装饰器，支持 `direct`（立即）、`cron`（cron 表达式）、
+  `interval`（固定间隔）三种模式
 - **Redis Streams 消息代理**：基于消费者组与 PEL 的可靠投递，支持通过
   `xautoclaim` 回收失联消费者的消息
 - **失败重试与死信队列**：失败的消息按退避（1.5 秒起、逐次翻倍、封顶 30 秒）在
@@ -69,10 +69,6 @@ def example(index: int = 0) -> None:
     print(f"[{index}] Current time: {time.time()}")
 
 
-@task("default", mode="delay", delay=10)  # 延迟 10 秒执行
-def delayed() -> None: ...
-
-
 @task("default", mode="cron", cron="*/5 * * * *")  # 每 5 分钟执行
 def periodic() -> None: ...
 
@@ -109,7 +105,8 @@ async with binomic:
 
 消息进哪条 Stream 由任务声明里的队列决定（消息上不指定队列）；`enqueued_at` 由客户端进程内的
 broker 在 enqueue 时写入时间戳（不是 `Message` 上的字段），无需手工赋值。`submit`
-只支持 `direct` 与 `delay` 两种模式：`cron` 与 `interval` 任务在客户端启动时自动注册，
+只支持 `direct` 模式并返回 broker 写入的 `MessageEntry`（内部失败降级时为
+`None`）：`cron` 与 `interval` 任务在客户端启动时自动注册，
 对其调用 `submit` 会抛 `ValueError`。Redis key 前缀与消费者组名（`namespace`）
 由客户端在内部按 `module_name` 派生，Worker 侧同样派生，两侧自动落在同一命名空间；
 它不是用户面参数。Worker 的调节旋钮同样是 `BinomicConfig` 字段：
@@ -145,7 +142,6 @@ app = Litestar(
 ```mermaid
 flowchart TD
     P[生产者<br>Binomic 客户端] -->|submit：direct| B[RedisBroker<br>Redis Streams]
-    P -->|submit：delay| S[TaskScheduler]
     P -.->|启动时注册：cron / interval| S
     S -->|到期投递| B
     B -->|consumer group / PEL| W1[Worker 0<br>子进程]
@@ -158,9 +154,9 @@ flowchart TD
 ```
 
 - **Producer**：`Binomic.submit` 经 `BrokerFactory` 按 broker DSN 协议创建代理并
-  `enqueue` 消息；`delay` 任务交给调度器延后投递，`cron` 与 `interval` 任务不经
-  `submit`，而在客户端启动时注册为周期作业。
-- **Scheduler**：`TaskScheduler` 为 `delay` / `cron` / `interval` 三种模式创建对应的
+  `enqueue` 消息；`cron` 与 `interval` 任务不经 `submit`，而在客户端启动时注册为
+  周期作业。
+- **Scheduler**：`TaskScheduler` 为 `cron` / `interval` 两种周期模式创建对应的
   触发器，到期后走与 `direct` 相同的入队路径。每个 Worker 自己也持有一个
   `TaskScheduler`，承担失败重投的退避延时。
 - **Broker**：`RedisBroker` 将消息写入 Redis Streams：每队列 `:stream`（条目只存
@@ -186,16 +182,16 @@ flowchart TD
   `binomic.worker.heartbeat.age` gauge 与 `binomic.worker.restarts` counter
   （带 `binomic.worker.reason` 属性）由客户端进程内的监督循环发射，告警与审计
   两用；正常停机不计入重启
-- [x] **P0 · 延时作业持久化** —— 已裁决：**不做**。`delay` 保留为进程内延时糖，
-  语义为**非持久**（提交驻留在客户端进程内存的调度器中，进程退出即丢，边界见
-  [调度文档](docs/guide/scheduling.md)）；跨重启的延时投递在出现真实使用场景前不建设，
-  届时按 Redis 侧排队立项
+- [x] **P0 · 延时任务模式** —— 已裁决：**移除**。任务模式收敛为 `direct` /
+  `cron` / `interval`；需要延后执行时在任务函数内等待，或使用公开的
+  `TaskScheduler.delay()` 排程（进程内、非持久，边界见
+  [调度文档](docs/guide/scheduling.md)）
 - [x] **P0 · 存储有界** —— ack/dead/reclaim 对终态条目做 `XDEL` 清理；radix 树节点在
   整节点删空后即释放，主队列实为滑动窗口、不随历史增长（已实测验证）。DLQ 的保留
   策略已随运维工具链落地（`dlq_retention`，默认 7 天，可关闭）
 - [x] **P1 · DLQ 运维工具链** —— 回放、检查与保留策略的标准化管理面：
   `await client.dead_letters(queue)` 返回绑定队列的 `DeadLetters` 操作句柄
-  （depth / list / read / replay / prune，自定义 broker 经 `BrokerDlqCapability`
+  （depth / list / read / replay / prune，自定义 broker 经 `BrokerDeadLetterCapability`
   探测）；重放以全新消息回原队列（新 UUID、`attempt` 重置 1、源记录保留）；
   保留策略 `dlq_retention`（默认 7 天、`None` 关闭）由 worker 周期清理超期记录
   （自动清理为默认机制，句柄的 `prune(retention)` 是同一原语的显式触发口径）。
@@ -206,8 +202,9 @@ flowchart TD
 - [x] **P1 · 死信队列** —— 超时、超龄与超出 `max_attempts` 的消息进入 DLQ
   （`{namespace}:{queue}:dlq:stream` + `:dlq:hash`），可检查、可重放
 - [ ] **P2 · 大规模稳定性验证** —— 多实例、Redis 抖动与网络分区下的长稳测试
-- [x] **P2 · Redis HA 兼容验证** —— 八个 broker 脚本（6 操作 + observe/context）
-  与 consumer group 语义的兼容性验证：Sentinel 可用（数据面语义与单机等价，
+- [x] **P2 · Redis HA 兼容验证** —— 验证时已存在的 8 个 broker 脚本（6 操作 +
+  observe/context）与 consumer group 语义的兼容性验证（后加入的 `dlq_prune` 形态
+  相同）：Sentinel 可用（数据面语义与单机等价，
   连接由使用方建立），Cluster 结构性不支持（`keys=[]` 随机路由、单脚本多 key
   跨 slot、多队列 `XREADGROUP` 被客户端拒绝）。验证资产在 `assets/` 与
   `test_integration/ha/`（`pytest -m ha`），结论详见可靠性指南；其后新增的

@@ -27,10 +27,6 @@ def example(index: int = 0) -> None:
     print(f"[{index}] Current time: {time.time()}")
 
 
-@task("default", mode="delay", delay=10)  # runs after a 10-second delay
-def delayed() -> None: ...
-
-
 @task("default", mode="cron", cron="*/5 * * * *")  # runs every 5 minutes
 def periodic() -> None: ...
 
@@ -41,14 +37,14 @@ def poll() -> None: ...
 
 The first positional argument is the **queue name** and must match a queue in
 the client's `queues` configuration. Tasks are registered under the function
-name **as written** (case-sensitive: `example`, `delayed`, `periodic`, and
-`poll` above), which is how you refer to a task when submitting it.
+name **as written** (case-sensitive: `example`, `periodic`, and `poll`
+above), which is how you refer to a task when submitting it.
 
 Functions in the two periodic modes, `cron` and `interval`, **take no
 arguments** — a periodic firing has no call arguments to pass, so declaring
 one raises `ValueError` outright. See
 [Task modes and scheduling](scheduling.md) for the full description of all
-four modes.
+three modes.
 
 ## Start and submit
 
@@ -89,7 +85,7 @@ async with binomic:
   message neither needs nor can specify a queue;
 - `enqueued_at` needs no manual assignment: the client-side broker stamps it
   -- not onto the `Message` itself -- at the moment of **actual delivery**,
-  which is also why delay and periodic tasks see the current time on every
+  which is also why periodic tasks see the current time on every
   delivery;
 - telemetry is enabled with `otel_enabled`, and `worker_init` installs the SDK
   inside each worker subprocess; see [Observability](observability.md).

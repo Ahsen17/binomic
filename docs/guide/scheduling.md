@@ -1,8 +1,8 @@
 # 任务模式与调度
 
-任务在**声明时**确定模式，模式决定它何时被执行：是提交即执行，还是延后一次，
-还是按周期反复执行。共四种模式 —— `direct`、`delay`、`cron`、`interval`。
-它们在提交链路上的位置见[架构](architecture.md)。
+任务在**声明时**确定模式，模式决定它何时被执行：是提交即执行，还是按周期反复执行。
+共三种模式 —— `direct`、`cron`、`interval`。它们在提交链路上的位置见
+[架构](architecture.md)。
 
 ## 声明任务
 
@@ -24,16 +24,10 @@ def example(index: int = 0) -> None: ...
 | 模式 | 附加参数 | 执行时机 | 能否带参数 |
 |-|-|-|-|
 | `direct` | 无（默认） | 提交时立即执行 | 可以 |
-| `delay` | `delay`：延迟秒数 | 提交后延迟指定秒数执行一次 | 可以 |
 | `cron` | `cron`：cron 表达式字符串 | 按 cron 表达式重复执行 | **不可以** |
 | `interval` | `interval`：间隔秒数 | 每隔指定秒数重复执行 | **不可以** |
 
 ```python
-# 延迟 10 秒执行一次
-@task("default", mode="delay", delay=10)
-def delayed() -> None: ...
-
-
 # 每 5 分钟执行（cron 表达式，分/时/日/月/周）
 @task("default", mode="cron", cron="*/5 * * * *")
 def periodic() -> None: ...
@@ -46,12 +40,14 @@ def poll() -> None: ...
 
 声明期会立刻校验，不合法直接抛 `ValueError`：
 
-- 缺必需参数：`delay` / `cron` / `interval` 模式各自要求对应的参数；
+- 缺必需参数：`cron` / `interval` 模式各自要求对应的参数；
 - 周期任务带参数：`cron` 与 `interval` 模式的函数**不能有参数** —— 周期触发时没有调用
-  参数可传（原因见下节）。
+  参数可传（原因见下节）；
+- 不支持的模式：`mode` 只接受上述三种，其他值（包括旧版的 `"delay"`）在声明期直接
+  抛 `ValueError`。
 
-延迟与间隔的取值只要求是**正数**，这条在**声明期**由装饰器校验（`delay` / `interval`
-`<= 0` 直接抛 `ValueError`）。`TaskScheduler` 本身是通用的可调用对象封装、不感知任务
+`interval` 的取值只要求是**正数**，这条在**声明期**由装饰器校验（`interval <= 0`
+直接抛 `ValueError`）。`TaskScheduler` 本身是通用的可调用对象封装、不感知任务
 语义，因此不做这类校验，见下文「直接使用调度器」。
 
 ```{note}
@@ -62,19 +58,16 @@ def poll() -> None: ...
 
 ## 提交任务
 
-`Binomic.submit` 把一条 `Message` 交给客户端处理，但**只支持两种模式**：
-
-- `direct`：立即把消息写入任务声明的队列；
-- `delay`：交给调度器，延迟到期后再写入队列。
-
-对 `cron` 或 `interval` 任务调用 `submit` 会抛 `ValueError` —— 周期任务不接受单次
-提交，它们的触发由客户端在启动时自动注册（见下节）。消息进哪条 Stream 由**任务声明
-里的队列**决定，`submit` 不接受调用方指定队列。
+`Binomic.submit` 把一条 `Message` 交给客户端处理，但**只支持 `direct` 模式**：
+它立即把消息写入任务声明的队列，并返回 broker 写入的 `MessageEntry`（含 stream
+条目 id、队列、消息与投递时间戳）。内部脚本失败时 broker 降级返回 `None`，`submit`
+原样透传。对 `cron` 或 `interval` 任务调用 `submit` 会抛 `ValueError` —— 周期任务
+不接受单次提交，它们的触发由客户端在启动时自动注册（见下节）。消息进哪条 Stream
+由**任务声明里的队列**决定，`submit` 不接受调用方指定队列。
 
 ```{note}
-`delay` 的延时作业驻留在客户端进程内存的调度器中，**不持久**：进程退出即丢，到期
-投递的前提是客户端进程一直存活到到期之后。跨重启存活的延时投递不在框架承诺内，
-需要时由调用方自行保障（如落盘排队 + 启动补投）。
+框架不提供一次性延迟任务模式。需要在提交后延迟执行时，可以在任务函数内部等待，
+或用下文公开的 `TaskScheduler.delay()` 把任意可调用对象排成延时作业。
 ```
 
 ```python
@@ -118,7 +111,8 @@ asyncio.run(main())
 ```
 
 `TaskScheduler` 只接收可调用对象，不感知 `TaskSpec`；延时、cron 表达式、间隔都由调用
-方直接给出，到期后原样调用 `func`。
+方直接给出，到期后原样调用 `func`。`delay()` 是通用调度原语，不是任务模式：
+Worker 的失败重投正是用它把 `broker.retry` 排成延时作业。
 
 - **必须在运行中的事件循环内使用**：`TaskScheduler` 基于 APScheduler 的
   `AsyncIOScheduler`，后者在 `start()` 时就地捕获当前事件循环 —— 在事件循环之外调用
@@ -132,7 +126,7 @@ asyncio.run(main())
   到期时要调用的可调用对象，`args` / `kwargs` 原样传给 `func`。调度器不感知任务语义，
   时序值不合法时由 APScheduler 的触发器构造报错。
 - **校验归属**：任务语义（模式、必填参数、正数、`on_dead` 须为可调用对象）在
-  **声明期**由 `@task` 装饰器校验，在**提交期**由 `Binomic.submit` 复核；调度器只
+  **声明期**由 `@task` 装饰器校验；`Binomic.submit` 只接受 `direct` 任务。调度器只
   负责排程。Worker 的失败重投就是直接调 `scheduler.delay` 把 `broker.retry` 排成
   延时作业（见[可靠性](reliability.md)）。
 - **生命周期**：`start()` 之后作业才会真正触发，`close()` 停机，二者均为同步方法；
@@ -141,5 +135,5 @@ asyncio.run(main())
   等到达期）。
 - **迟到也执行**：`delay` 排出的作业带 `misfire_grace_time=None`，因此即便调度器在
   `run_date` 之后才轮到它（事件循环被占住、或进程一度停顿），作业照样触发，不会被当作
-  「错过的运行」而静默丢弃 —— 延后投递代表的是**必须发生**的动作；`cron` / `interval`
-  沿用 APScheduler 默认宽限。
+  「错过的运行」而静默丢弃 —— 延后执行的作业代表的是**必须发生**的动作；
+  `cron` / `interval` 沿用 APScheduler 默认宽限。

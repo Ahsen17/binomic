@@ -7,7 +7,7 @@ import structlog
 from anyio import AsyncContextManagerMixin
 
 from binomic.broker import (
-    BrokerDlqCapability,
+    BrokerDeadLetterCapability,
     BrokerFactory,
     BrokerLifecycleCapability,
     BrokerTelemetryCapability,
@@ -15,31 +15,20 @@ from binomic.broker import (
     QueueCapacityError,
 )
 from binomic.client.dlq import DeadLetters
-from binomic.otel import (
+from binomic.otel import otel
+from binomic.otel.signatures import (
     MESSAGING_DESTINATION_NAME,
     MESSAGING_MESSAGE_ID,
     MESSAGING_OPERATION_NAME,
     MESSAGING_SYSTEM,
     MESSAGING_SYSTEM_VALUE,
     TASK_NAME,
-    capture_context,
-    create_counter,
-    ensure_available,
-    start_producer_span,
 )
-from binomic.task import (
-    TaskRegistry,
-    TaskScheduler,
-    autodiscover,
-)
-from binomic.worker import (
-    Master,
-    MasterPolicy,
-    WorkerPolicy,
-)
+from binomic.task import TaskRegistry, TaskScheduler, autodiscover
+from binomic.worker import Master, MasterPolicy, WorkerPolicy
 
 if TYPE_CHECKING:
-    from binomic.broker import Broker
+    from binomic.broker import Broker, MessageEntry
 
     from .config import BinomicConfig
 
@@ -84,15 +73,13 @@ class Binomic(AsyncContextManagerMixin):
         self._submissions: Any | None = None
         self._rejections: Any | None = None
 
-        if self._config.otel_enabled:
-            ensure_available()
-
-            self._submissions = create_counter(
+        if self._config.otel_enabled and otel is not None:
+            self._submissions = otel.create_counter(
                 name="binomic.task.submissions",
                 unit="{task}",
             )
 
-            self._rejections = create_counter(
+            self._rejections = otel.create_counter(
                 name="binomic.task.rejections",
                 unit="{task}",
             )
@@ -126,6 +113,7 @@ class Binomic(AsyncContextManagerMixin):
         return self._scheduler
 
     async def start(self) -> None:
+        """Start the broker and the scheduler; safe to call repeatedly."""
 
         await self._ensure_broker()
         self._ensure_scheduler()
@@ -133,6 +121,7 @@ class Binomic(AsyncContextManagerMixin):
         logger.info("Client started", module=self._module_name)
 
     async def close(self) -> None:
+        """Stop the scheduler and close the broker; safe to call repeatedly."""
 
         closed = False
 
@@ -160,47 +149,42 @@ class Binomic(AsyncContextManagerMixin):
             TASK_NAME: message.task,
         }
 
-    def _capture(self, queue: str, message: "Message") -> dict[str, str]:
-        """Produce the creation span and capture its context for delivery."""
-
-        with start_producer_span(
-            queue,
-            self._span_attributes(queue, message),
-        ):
-            return capture_context()
-
     async def _deliver(
         self,
         queue: str,
         message: "Message",
         carrier: dict[str, str] | None = None,
-    ) -> None:
-        """Enqueue, handing the trace context only to capable brokers."""
+    ) -> "MessageEntry | None":
+        """Enqueue, handing the trace context only to capable brokers.
+
+        Returns the broker's entry, or ``None`` when the enqueue degraded.
+        """
 
         broker = await self._ensure_broker()
 
         if carrier and isinstance(broker, BrokerTelemetryCapability):
-            await broker.enqueue(
+            return await broker.enqueue(
                 queue=queue,
                 message=message,
                 context=carrier,
             )
-            return
 
-        await broker.enqueue(queue=queue, message=message)
+        return await broker.enqueue(queue=queue, message=message)
 
-    async def _enqueue(self, queue: str, message: "Message") -> None:
-        """Enqueue with a producer span; shared by all delivery paths."""
+    async def _enqueue(self, queue: str, message: "Message") -> "MessageEntry | None":
+        """Enqueue with a producer span; shared by all delivery paths.
 
-        if not self._config.otel_enabled:
-            await self._deliver(queue, message)
-            return
+        Passes through the broker's entry, or ``None`` on degradation.
+        """
 
-        with start_producer_span(
+        if not self._config.otel_enabled or otel is None:
+            return await self._deliver(queue, message)
+
+        with otel.start_producer_span(
             queue,
             self._span_attributes(queue, message),
         ):
-            await self._deliver(queue, message, capture_context())
+            return await self._deliver(queue, message, otel.capture_context())
 
     def _count_rejection(self, task: str, queue: str) -> None:
 
@@ -213,30 +197,17 @@ class Binomic(AsyncContextManagerMixin):
                 },
             )
 
-    async def _deliver_scheduled(
-        self,
-        queue: str,
-        message: "Message",
-        carrier: dict[str, str] | None = None,
-    ) -> None:
-        """Deliver inside a scheduler job, where no caller channel exists.
+    async def _deliver_scheduled(self, queue: str, message: "Message") -> None:
+        """Deliver inside a cron/interval job, where no caller channel exists.
 
-        A carrier means the producer span and trace context were already
-        captured at ``submit`` time (the delay path); without one — the
-        cron/interval registrations — the delivery goes through ``_enqueue``
-        so each round produces its own span and context, as it always did.
-        A capacity rejection there degrades to a warning and a rejection
-        count: delay success only ever meant *scheduled* (and the in-memory
-        job is non-durable), while cron/interval rounds come back on their
-        own. Nothing is re-enqueued and no exception escapes into the job.
+        Every round goes through ``_enqueue``, so it produces its own producer
+        span and trace context. A capacity rejection degrades to a warning and
+        a rejection count; nothing is re-enqueued and no exception escapes
+        into the job, because the next round comes back on its own.
         """
 
         try:
-            if carrier:
-                await self._deliver(queue, message, carrier)
-
-            else:
-                await self._enqueue(queue, message)
+            await self._enqueue(queue, message)
 
         except QueueCapacityError as err:
             self._count_rejection(message.task, queue)
@@ -250,64 +221,31 @@ class Binomic(AsyncContextManagerMixin):
                 capacity=err.capacity,
             )
 
-    async def submit(self, message: "Message") -> None:
+    async def submit(self, message: "Message") -> "MessageEntry | None":
         """Submit a message for delivery according to its task's mode.
 
-        ``direct`` enqueues immediately and raises ``QueueCapacityError``
-        when the target queue is full; internal enqueue failures keep
-        degrading silently. ``delay`` schedules the enqueue on the client
-        process's in-memory scheduler, so success only means *scheduled* and
-        the job is lost if the process exits before the delay elapses; a
-        queue that is full when the delay fires logs and counts the
-        rejection and drops that delivery. ``cron`` and ``interval`` tasks
-        are periodic and reject ``submit``.
+        ``direct`` enqueues immediately and returns the broker's
+        ``MessageEntry``. ``None`` means the enqueue degraded internally
+        (already logged). A full target queue raises ``QueueCapacityError``.
+        ``cron`` and ``interval`` tasks are periodic and reject ``submit`` —
+        they are registered when the async context starts.
         """
 
         spec = self._registry.get(message.task)
 
-        match spec.mode:
-            case "direct":
-                # TODO: internal enqueue failures are still silent —
-                # `enqueue` degrades to None on script-level errors and the
-                # result goes unchecked here. Capacity rejections are no
-                # longer silent: they raise out of `enqueue` (counted and
-                # re-raised below). Plan: a shared `_checked_enqueue` (raise
-                # on None) for all enqueue-fed paths, and optionally a
-                # bounded in-job retry for the scheduled paths.
-                try:
-                    await self._enqueue(spec.queue, message)
+        if spec.mode != "direct":
+            raise ValueError(
+                "Invalid task mode, `submit` only supports direct tasks. "
+                f"Received `{spec.mode}` task."
+            )
 
-                except QueueCapacityError:
-                    self._count_rejection(message.task, spec.queue)
-                    raise
+        try:
+            resp = await self._enqueue(spec.queue, message)
 
-            case "delay":
-                if spec.delay is None or spec.delay <= 0:
-                    raise ValueError(
-                        "Delay task must suply `delay` argument "
-                        "and ensure it's greater than 0",
-                    )
+        except QueueCapacityError:
+            self._count_rejection(message.task, spec.queue)
 
-                carrier: dict[str, str] = {}
-
-                if self._config.otel_enabled:
-                    carrier = self._capture(spec.queue, message)
-
-                self._ensure_scheduler().delay(
-                    func=self._deliver_scheduled,
-                    delay=spec.delay,
-                    args=(
-                        spec.queue,
-                        message,
-                        carrier or None,
-                    ),
-                )
-
-            case _:
-                raise ValueError(
-                    "Invalid task mode, `submit` only supports "
-                    f"direct and delay tasks. Received `{spec.mode}` task."
-                )
+            raise
 
         logger.debug(
             "Task submitted",
@@ -323,6 +261,8 @@ class Binomic(AsyncContextManagerMixin):
                 attributes={TASK_NAME: message.task},
             )
 
+        return resp
+
     async def dead_letters(self, queue: str) -> "DeadLetters":
         """Resolve the broker and return its dead-letter operations handle.
 
@@ -334,10 +274,10 @@ class Binomic(AsyncContextManagerMixin):
 
         broker = await self._ensure_broker()
 
-        if not isinstance(broker, BrokerDlqCapability):
+        if not isinstance(broker, BrokerDeadLetterCapability):
             raise NotImplementedError(
                 f"Broker {type(broker).__name__} does not implement "
-                "BrokerDlqCapability; dead-letter management is unavailable"
+                "BrokerDeadLetterCapability; dead-letter management is unavailable"
             )
 
         return DeadLetters(broker, queue)
@@ -435,13 +375,13 @@ class BinomicFactory:
         broker_dsn: str,
         module_name: str,
         config: "BinomicConfig",
-        **broker_kwargs: Any,
+        **broker_config: Any,
     ) -> None:
 
         self._broker_dsn = broker_dsn
         self._module_name = module_name
         self._config = config
-        self._broker_kwargs = broker_kwargs
+        self._broker_config = broker_config
 
         self._binomic: Binomic | None = None
 
@@ -453,7 +393,7 @@ class BinomicFactory:
                 broker_dsn=self._broker_dsn,
                 module_name=self._module_name,
                 config=self._config,
-                **self._broker_kwargs,
+                **self._broker_config,
             )
 
         return self._binomic

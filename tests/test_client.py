@@ -13,7 +13,7 @@ from pytest_mock import MockerFixture
 
 from binomic.broker import Broker, Message, QueueCapacityError, RedisBroker
 from binomic.client import Binomic, BinomicConfig, BinomicFactory, DeadLetters
-from binomic.otel import MESSAGING_DESTINATION_NAME, TASK_NAME
+from binomic.otel.signatures import MESSAGING_DESTINATION_NAME, TASK_NAME
 from binomic.task import TaskNotFoundError
 
 APP_SOURCE = """\
@@ -22,10 +22,6 @@ from binomic.task import task
 
 @task("default", mode="direct")
 async def alpha() -> None: ...
-
-
-@task("delayq", mode="delay", delay=5.0)
-async def later() -> None: ...
 
 
 @task("cronq", mode="cron", cron="*/5 * * * *")
@@ -54,7 +50,7 @@ def client_app(tmp_path_factory: pytest.TempPathFactory) -> Path:
 @pytest.fixture
 def config() -> BinomicConfig:
 
-    return BinomicConfig(queues=["default", "delayq", "cronq"])
+    return BinomicConfig(queues=["default", "scheduledq", "cronq"])
 
 
 @pytest.fixture
@@ -88,9 +84,7 @@ class TestConstruction:
 
         client = make_client()
 
-        assert {"alpha", "later", "cronned", "ticked"} <= {
-            spec.name for spec in client._registry
-        }
+        assert {"alpha", "cronned", "ticked"} <= {spec.name for spec in client._registry}
 
     def test_unknown_module_fails_construction(
         self, make_client: Callable[..., Binomic]
@@ -110,7 +104,8 @@ class TestSubmit:
         client = make_client()
         await client.start()
 
-        await client.submit(make_message(task="alpha"))
+        message = make_message(task="alpha")
+        entry = await client.submit(message)
 
         broker = client._broker
         assert isinstance(broker, RedisBroker)
@@ -120,37 +115,11 @@ class TestSubmit:
         assert entries is not None
         assert len(entries) == 1
 
-        await client.close()
-
-    async def test_delay_schedules_instead_of_enqueueing(
-        self,
-        make_client: Callable[..., Binomic],
-        make_message: Callable[..., Message],
-    ) -> None:
-
-        client = make_client()
-        await client.start()
-
-        await client.submit(make_message(task="later"))
-
-        # No stream entry: the enqueue runs when the scheduled job fires.
-        broker = client._broker
-        assert isinstance(broker, RedisBroker)
-        entries = await broker._ensure_client().xrange(
-            f"{broker._group}:default:stream", "-", "+"
-        )
-        assert entries == []
-
-        scheduler = client._scheduler
-        assert scheduler is not None
-        underlying = scheduler._scheduler
-        assert underlying is not None
-        jobs = underlying.get_jobs()
-        assert len(jobs) == 1
-        assert jobs[0].func.__name__ == "_deliver_scheduled"
-        # (queue, message) pair the job will enqueue with.
-        assert jobs[0].args[0] == "delayq"
-        assert jobs[0].args[1].task == "later"
+        assert entry is not None
+        assert entry.id == entries[0][0]
+        assert entry.queue == "default"
+        assert entry.message.id == message.id
+        assert entry.message.task == "alpha"
 
         await client.close()
 
@@ -381,7 +350,7 @@ class TestTelemetrySubmission:
 
         client = make_client(
             config=BinomicConfig(
-                queues=["default", "delayq", "cronq"],
+                queues=["default", "scheduledq", "cronq"],
                 otel_enabled=True,
             )
         )
@@ -460,7 +429,7 @@ class TestCapacityRejection:
 
         client = make_client(
             config=BinomicConfig(
-                queues=["default", "delayq", "cronq"],
+                queues=["default", "scheduledq", "cronq"],
                 capacity=1,
                 otel_enabled=True,
             )
@@ -496,7 +465,7 @@ class TestCapacityRejection:
 
         client = make_client(
             config=BinomicConfig(
-                queues=["default", "delayq", "cronq"],
+                queues=["default", "scheduledq", "cronq"],
                 capacity=1,
                 otel_enabled=True,
             )
@@ -505,13 +474,15 @@ class TestCapacityRejection:
 
         broker = client._broker
         assert isinstance(broker, RedisBroker)
-        assert await broker.enqueue("delayq", make_message(task="later")) is not None
+        assert (
+            await broker.enqueue("scheduledq", make_message(task="cronned")) is not None
+        )
 
         before = sum(int(point.value) for point in _rejection_points(metric_reader))
 
         # A scheduler job has no caller channel: nothing escapes the call and
         # the rejection lands in the counter instead.
-        await client._deliver_scheduled("delayq", make_message(task="later"))
+        await client._deliver_scheduled("scheduledq", make_message(task="cronned"))
 
         after = sum(int(point.value) for point in _rejection_points(metric_reader))
         assert after == before + 1
@@ -531,7 +502,9 @@ class TestCapacityRejection:
         span_exporter.clear()
 
         client = make_client(
-            config=BinomicConfig(queues=["default", "delayq", "cronq"], otel_enabled=True)
+            config=BinomicConfig(
+                queues=["default", "scheduledq", "cronq"], otel_enabled=True
+            )
         )
         await client.start()
 
@@ -560,7 +533,7 @@ class TestCapacityRejection:
         _, metric_reader = otel_sdk
 
         client = make_client(
-            config=BinomicConfig(queues=["default", "delayq", "cronq"], capacity=1)
+            config=BinomicConfig(queues=["default", "scheduledq", "cronq"], capacity=1)
         )
         await client.start()
 
@@ -569,10 +542,12 @@ class TestCapacityRejection:
 
         broker = client._broker
         assert isinstance(broker, RedisBroker)
-        assert await broker.enqueue("delayq", make_message(task="later")) is not None
+        assert (
+            await broker.enqueue("scheduledq", make_message(task="cronned")) is not None
+        )
 
         before = sum(int(point.value) for point in _rejection_points(metric_reader))
-        await client._deliver_scheduled("delayq", make_message(task="later"))
+        await client._deliver_scheduled("scheduledq", make_message(task="cronned"))
         after = sum(int(point.value) for point in _rejection_points(metric_reader))
 
         assert after == before
@@ -588,7 +563,7 @@ class TestCapacityRejection:
 
         client = make_client(
             config=BinomicConfig(
-                queues=["default", "delayq", "cronq"],
+                queues=["default", "scheduledq", "cronq"],
                 capacity=1,
             )
         )
@@ -596,18 +571,20 @@ class TestCapacityRejection:
 
         broker = client._broker
         assert isinstance(broker, RedisBroker)
-        assert await broker.enqueue("delayq", make_message(task="later")) is not None
+        assert (
+            await broker.enqueue("scheduledq", make_message(task="cronned")) is not None
+        )
 
         # A scheduler job has no caller channel: the rejection is logged,
         # counted and dropped — nothing propagates out of the delivery call.
         with caplog.at_level(logging.WARNING, logger="binomic.client.client"):
-            await client._deliver_scheduled("delayq", make_message(task="later"))
+            await client._deliver_scheduled("scheduledq", make_message(task="cronned"))
 
         assert any(
             "queue capacity reached" in record.getMessage() for record in caplog.records
         )
         entries = await broker._ensure_client().xrange(
-            f"{broker._group}:delayq:stream", "-", "+"
+            f"{broker._group}:scheduledq:stream", "-", "+"
         )
         assert entries is not None
         assert len(entries) == 1
@@ -636,7 +613,7 @@ class TestBrokerCapability:
 
         client = make_client(
             config=BinomicConfig(
-                queues=["default", "delayq", "cronq"],
+                queues=["default", "scheduledq", "cronq"],
                 otel_enabled=True,
             )
         )
@@ -732,5 +709,5 @@ class TestDeadLetters:
         client = make_client()
         client._broker = cast("Broker", object())
 
-        with pytest.raises(NotImplementedError, match="BrokerDlqCapability"):
+        with pytest.raises(NotImplementedError, match="BrokerDeadLetterCapability"):
             await client.dead_letters("default")

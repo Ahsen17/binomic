@@ -1,9 +1,9 @@
-from .exceptions import DLQEntryNotFoundError, QueueCapacityError
+from .exceptions import DeadLetterEntryNotFoundError, QueueCapacityError
 from .factory import BrokerFactory
-from .message import DLQRecordEntry, Message, MessageEntry
+from .message import DeadLetterEntry, Message, MessageEntry
 from .protocols import (
     Broker,
-    BrokerDlqCapability,
+    BrokerDeadLetterCapability,
     BrokerLifecycleCapability,
     BrokerTelemetryCapability,
 )
@@ -11,12 +11,12 @@ from .redis import RedisBroker
 
 __all__ = (
     "Broker",
-    "BrokerDlqCapability",
+    "BrokerDeadLetterCapability",
     "BrokerFactory",
     "BrokerLifecycleCapability",
     "BrokerTelemetryCapability",
-    "DLQEntryNotFoundError",
-    "DLQRecordEntry",
+    "DeadLetterEntry",
+    "DeadLetterEntryNotFoundError",
     "Message",
     "MessageEntry",
     "QueueCapacityError",

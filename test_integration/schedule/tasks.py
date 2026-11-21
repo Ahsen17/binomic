@@ -15,7 +15,7 @@ import os
 import redis
 
 from binomic.task import task
-from test_integration.schedule import DELAY_SECONDS, INTERVAL_SECONDS, SCHEDULE_QUEUE
+from test_integration.schedule import INTERVAL_SECONDS, SCHEDULE_QUEUE
 
 # A repeating task takes no arguments -- the client submits it as a bare
 # `Message(name=...)` -- so it reads where to report from the environment the
@@ -31,16 +31,6 @@ def _record(key: str, *, dsn: str) -> None:
     client = redis.Redis.from_url(dsn, decode_responses=True)
     try:
         client.incr(key)
-    finally:
-        client.close()
-
-
-@task(SCHEDULE_QUEUE, mode="delay", delay=DELAY_SECONDS)
-def write_delayed_result(dsn: str, key: str) -> None:
-
-    client = redis.Redis.from_url(dsn, decode_responses=True)
-    try:
-        client.set(key, "done")
     finally:
         client.close()
 

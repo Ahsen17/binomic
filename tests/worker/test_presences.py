@@ -4,20 +4,20 @@ from typing import TYPE_CHECKING
 
 from pytest_mock import MockerFixture
 
-from binomic.worker.presence import MasterPresence, SubprocessPresence
+from binomic.worker.presences import MasterPresence, SlavePresence
 
 if TYPE_CHECKING:
     from multiprocessing.sharedctypes import Synchronized
 
 
-class TestSubprocessPresence:
+class TestSlavePresence:
     def test_heartbeat_stamps_the_current_time(
         self, heartbeat: "Synchronized[float]", mocker: MockerFixture
     ) -> None:
 
-        mocker.patch("binomic.worker.presence.time.time", return_value=1234.5)
+        mocker.patch("binomic.worker.presences.time.time", return_value=1234.5)
 
-        SubprocessPresence(heartbeat).heartbeat()
+        SlavePresence(heartbeat).heartbeat()
 
         assert heartbeat.value == 1234.5
 
@@ -27,7 +27,7 @@ class TestSubprocessPresence:
 
         before = time.time()
 
-        SubprocessPresence(heartbeat).heartbeat()
+        SlavePresence(heartbeat).heartbeat()
 
         assert before <= heartbeat.value <= time.time()
 
@@ -57,11 +57,11 @@ class TestMasterPresence:
         self, heartbeat: "Synchronized[float]", mocker: MockerFixture
     ) -> None:
 
-        mocker.patch("binomic.worker.presence.time.time", return_value=42.0)
+        mocker.patch("binomic.worker.presences.time.time", return_value=42.0)
 
         presence = MasterPresence()
         presence.watch("worker-0", heartbeat)
-        SubprocessPresence(heartbeat).heartbeat()
+        SlavePresence(heartbeat).heartbeat()
 
         assert presence.presence() == {"worker-0": 42.0}
 

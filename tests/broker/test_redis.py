@@ -10,7 +10,7 @@ import pytest
 from pytest_mock import MockerFixture
 
 from binomic.broker import (
-    DLQEntryNotFoundError,
+    DeadLetterEntryNotFoundError,
     Message,
     MessageEntry,
     QueueCapacityError,
@@ -1024,7 +1024,7 @@ class TestDlqReplay:
         self, broker: RedisBroker
     ) -> None:
 
-        with pytest.raises(DLQEntryNotFoundError, match="999-0"):
+        with pytest.raises(DeadLetterEntryNotFoundError, match="999-0"):
             await broker.dlq_replay("default", "999-0")
 
     async def test_full_queue_raises_capacity_error(

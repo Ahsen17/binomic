@@ -1,13 +1,11 @@
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from collections.abc import Mapping
+from typing import Protocol, runtime_checkable
 
-if TYPE_CHECKING:
-    from collections.abc import Mapping
-
-    from .message import DLQRecordEntry, Message, MessageEntry
+from .message import DeadLetterEntry, Message, MessageEntry
 
 __all__ = (
     "Broker",
-    "BrokerDlqCapability",
+    "BrokerDeadLetterCapability",
     "BrokerLifecycleCapability",
     "BrokerTelemetryCapability",
 )
@@ -15,42 +13,31 @@ __all__ = (
 
 @runtime_checkable
 class Broker(Protocol):
-    """The broker surface the client and workers talk to.
+    """The delivery-path surface every broker implements.
 
-    Every operation is an atomic Lua script; script-level failures degrade to
-    empty results instead of raising, so a broker hiccup cannot kill the
-    caller's loop. The one expected outcome that is raised is a full queue:
-    ``enqueue`` raises ``QueueCapacityError`` instead of degrading.
+    Messages are enqueued into a queue, acquired by a named consumer, then
+    acked, dead-lettered or requeued. ``retry`` preserves the original
+    ``enqueued_at``; ``reclaim`` rewrites it for recovered deliveries.
     """
 
     async def enqueue(
         self,
         queue: str,
-        message: "Message",
-        context: "Mapping[str, str] | None" = None,
-    ) -> "MessageEntry | None":
-        """Deliver a message to a queue.
-
-        ``context`` is an internal telemetry carrier (W3C trace fields) the
-        framework fills from the ambient trace context; submitters leave it
-        unset. Broker implementations treat it as an opaque string map and
-        store it apart from the message envelope.
-
-        Raises ``QueueCapacityError`` when the queue's unacknowledged total
-        has reached the capacity configured for it.
-        """
+        message: Message,
+        context: Mapping[str, str] | None = None,
+    ) -> MessageEntry | None: ...
 
     async def acquire(
         self,
         consumer: str,
         count: int,
-    ) -> list["MessageEntry"]: ...
+    ) -> list[MessageEntry]: ...
 
-    async def ack(self, entry: "MessageEntry") -> int: ...
+    async def ack(self, entry: MessageEntry) -> int: ...
 
-    async def dead(self, entry: "MessageEntry") -> int: ...
+    async def dead(self, entry: MessageEntry) -> int: ...
 
-    async def retry(self, entry: "MessageEntry") -> int: ...
+    async def retry(self, entry: MessageEntry) -> int: ...
 
     async def reclaim(
         self,
@@ -88,14 +75,14 @@ class BrokerTelemetryCapability(Protocol):
         self,
         queue: str,
         message_id: str,
-    ) -> "dict[str, str] | None":
+    ) -> dict[str, str] | None:
         """Read the delivery trace context stored for a message id.
 
         ``None`` means no context was stored or the read degraded; telemetry
         then falls back to a root span.
         """
 
-    async def observe(self, queue: str) -> "tuple[int, float | None] | None":
+    async def observe(self, queue: str) -> tuple[int, float | None] | None:
         """Probe queue depth for observability, outside the delivery path.
 
         Returns ``(depth, oldest entry age in seconds)``; the age is ``None``
@@ -105,7 +92,7 @@ class BrokerTelemetryCapability(Protocol):
 
 
 @runtime_checkable
-class BrokerDlqCapability(Protocol):
+class BrokerDeadLetterCapability(Protocol):
     """Optional DLQ management surface a broker may implement.
 
     Kept out of ``Broker`` so custom brokers stay valid without it; callers
@@ -126,7 +113,7 @@ class BrokerDlqCapability(Protocol):
         queue: str,
         limit: int = 50,
         cursor: str | None = None,
-    ) -> tuple[list["DLQRecordEntry"], str | None]:
+    ) -> tuple[list[DeadLetterEntry], str | None]:
         """Page through the DLQ oldest-first.
 
         Returns ``(records, next_cursor)``; ``next_cursor`` is ``None`` at
@@ -137,19 +124,19 @@ class BrokerDlqCapability(Protocol):
 
         ...
 
-    async def dlq_read(self, queue: str, entry_id: str) -> "DLQRecordEntry | None":
+    async def dlq_read(self, queue: str, entry_id: str) -> DeadLetterEntry | None:
         """Return one full record by DLQ stream entry id, or ``None``."""
 
         ...
 
-    async def dlq_replay(self, queue: str, entry_id: str) -> "MessageEntry | None":
+    async def dlq_replay(self, queue: str, entry_id: str) -> MessageEntry | None:
         """Re-deliver a DLQ record as a brand-new message.
 
         The replay carries a fresh UUID and ``attempt = 1`` (a full retry
         budget) and targets the record's original queue; the source record is
-        kept. Raises ``DLQEntryNotFoundError`` when the id is unknown, and
-        ``QueueCapacityError`` out of ``enqueue`` on a full queue; ``None``
-        means the enqueue degraded (warning already logged).
+        kept. Raises ``DeadLetterEntryNotFoundError`` when the id is unknown,
+        and ``QueueCapacityError`` out of ``enqueue`` on a full queue;
+        ``None`` means the enqueue degraded (warning already logged).
         """
 
         ...
@@ -159,8 +146,8 @@ class BrokerDlqCapability(Protocol):
 
         The entry age comes from the DLQ stream entry id's millisecond stamp,
         so the payload is never decoded; at most one bounded batch is deleted
-        per call. Returns the number of records deleted; script failures
-        degrade to ``0``.
+        per call. ``retention`` must be positive. Returns the number of records
+        deleted; script failures degrade to ``0``.
         """
 
         ...

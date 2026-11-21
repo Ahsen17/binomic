@@ -153,7 +153,7 @@ class TestRetry:
     ) -> None:
 
         e = await make_handler()
-        e.handler._backoff = lambda attempt: 0.05
+        e.handler.backoff = lambda attempt: 0.05
         await e.broker.enqueue("default", Message(task="boom", attempt=1))
         entry = await deliver_entry(e.broker, "default", "c1")
 
@@ -422,7 +422,7 @@ class TestBackoff:
     async def test_doubles_until_the_cap(self, make_handler: Callable[..., Any]) -> None:
 
         e = await make_handler()
-        backoff = e.handler._backoff
+        backoff = e.handler.backoff
 
         assert [backoff(n) for n in range(1, 8)] == [
             1.5,
@@ -492,7 +492,7 @@ class TestTelemetry:
         span_exporter.clear()
 
         with otel_trace.get_tracer("test").start_as_current_span("submit") as submit_span:
-            carrier = telemetry.capture_context()
+            carrier = telemetry.Telemetry.capture_context()
 
         trace_id = submit_span.get_span_context().trace_id
 
@@ -627,7 +627,7 @@ class TestTelemetryGating:
 
         marks: list[BaseException] = []
         mocker.patch(
-            "binomic.worker.handler.mark_span_error",
+            "binomic.worker.handler.otel.mark_span_error",
             side_effect=marks.append,
         )
 

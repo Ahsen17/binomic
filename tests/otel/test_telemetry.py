@@ -8,59 +8,61 @@ from opentelemetry import baggage, context, trace
 from binomic.otel import telemetry
 
 
+def active_telemetry() -> telemetry.Telemetry:
+    """The module-level instance, asserted available for this suite."""
+
+    instance = telemetry.otel
+
+    assert instance is not None
+
+    return instance
+
+
 class TestAvailability:
     def test_available_when_the_extra_is_installed(self) -> None:
 
         assert telemetry.AVAILABLE
 
-    def test_ensure_available_raises_without_the_extra(
+    def test_construction_requires_the_extra(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
 
         monkeypatch.setattr(telemetry, "AVAILABLE", False)
 
         with pytest.raises(RuntimeError, match=r"binomic\[otel\]"):
-            telemetry.ensure_available()
-
-    def test_helpers_degrade_without_the_extra(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-
-        monkeypatch.setattr(telemetry, "AVAILABLE", False)
-
-        assert telemetry.capture_context() == {}
-        assert telemetry.extract_context({"traceparent": "00-x"}) is None
-        telemetry.mark_span_error(RuntimeError("boom"))
+            telemetry.Telemetry()
 
 
 class TestPropagation:
     def test_capture_needs_an_active_span(self, otel_sdk: Any) -> None:
 
-        assert telemetry.capture_context() == {}
+        assert active_telemetry().capture_context() == {}
 
     def test_capture_and_extract_roundtrip(self, otel_sdk: Any) -> None:
 
+        instance = active_telemetry()
         tracer = trace.get_tracer("test")
 
         with tracer.start_as_current_span("parent") as span:
-            carrier = telemetry.capture_context()
+            carrier = instance.capture_context()
 
             assert "traceparent" in carrier
             assert carrier["traceparent"].startswith("00-")
 
-        extracted = telemetry.extract_context(carrier)
+        extracted = instance.extract_context(carrier)
         remote = trace.get_current_span(extracted)
 
         assert remote.get_span_context().trace_id == span.get_span_context().trace_id
 
     def test_baggage_is_captured_too(self, otel_sdk: Any) -> None:
 
+        instance = active_telemetry()
         tracer = trace.get_tracer("test")
         token = context.attach(baggage.set_baggage("tenant", "acme"))
 
         try:
             with tracer.start_as_current_span("parent"):
-                carrier = telemetry.capture_context()
+                carrier = instance.capture_context()
 
         finally:
             context.detach(token)
@@ -69,9 +71,42 @@ class TestPropagation:
 
     def test_malformed_carrier_falls_back_to_current_context(self, otel_sdk: Any) -> None:
 
-        extracted = telemetry.extract_context({"traceparent": "not-a-traceparent"})
+        extracted = active_telemetry().extract_context(
+            {"traceparent": "not-a-traceparent"}
+        )
 
         assert trace.get_current_span(extracted).get_span_context().is_valid is False
+
+
+class TestInstruments:
+    def test_observable_gauge_callback_builds_observations(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+
+        instance = active_telemetry()
+        captured: dict[str, Any] = {}
+
+        def fake_create(
+            name: str,
+            callbacks: list[Any],
+            unit: str,
+        ) -> object:
+
+            captured["callback"] = callbacks[0]
+            return object()
+
+        monkeypatch.setattr(instance._meter, "create_observable_gauge", fake_create)
+
+        instance.create_observable_gauge(
+            "binomic.test.gauge",
+            "1",
+            lambda: [(3.0, {"queue": "a"})],
+        )
+
+        (observation,) = captured["callback"](None)
+
+        assert observation.value == 3.0
+        assert observation.attributes == {"queue": "a"}
 
 
 class TestErrorMarking:
@@ -83,7 +118,7 @@ class TestErrorMarking:
         tracer = trace.get_tracer("test")
 
         with tracer.start_as_current_span("failing"):
-            telemetry.mark_span_error(ValueError("boom"))
+            active_telemetry().mark_span_error(ValueError("boom"))
 
         (span,) = span_exporter.get_finished_spans()
 
@@ -92,4 +127,4 @@ class TestErrorMarking:
 
     def test_noops_outside_a_span(self, otel_sdk: Any) -> None:
 
-        telemetry.mark_span_error(ValueError("boom"))
+        active_telemetry().mark_span_error(ValueError("boom"))

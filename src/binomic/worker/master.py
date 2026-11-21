@@ -8,15 +8,10 @@ from typing import TYPE_CHECKING, Any, Final, Literal
 import anyio
 import structlog
 
-from binomic.otel import (
-    RESTART_REASON,
-    WORKER_CONSUMER,
-    create_counter,
-    create_observable_gauge,
-    ensure_available,
-)
+from binomic.otel import otel
+from binomic.otel.signatures import RESTART_REASON, WORKER_CONSUMER
 
-from .presence import MasterPresence, SubprocessPresence
+from .presences import MasterPresence, SlavePresence
 from .worker import Worker
 
 if TYPE_CHECKING:
@@ -25,9 +20,12 @@ if TYPE_CHECKING:
     from .policies import MasterPolicy
 
 
-TERMINATE_TIMEOUT: Final[float] = 5.0
+__all__ = ("Master",)
+
 
 logger = structlog.stdlib.get_logger(__name__)
+
+TERMINATE_TIMEOUT: Final[float] = 5.0
 
 
 class Master:
@@ -53,25 +51,19 @@ class Master:
         self._method = method
         self._broker_kwargs = broker_kwargs
 
-        # Consumer names carry the hostname and master pid so instances of the
-        # same app sharing one Redis stay distinct identities in the consumer
-        # group, even when several run on one host.
         self._consumer_prefix = f"{socket.gethostname()}-{os.getpid()}"
-
         self._subprocesses: dict[str, BaseProcess] = {}
         self._presence = MasterPresence()
 
         self._restarts: Any | None = None
 
-        if self._policy.worker_policy.otel_enabled:
-            ensure_available()
-
-            self._restarts = create_counter(
+        if self._policy.worker_policy.otel_enabled and otel is not None:
+            self._restarts = otel.create_counter(
                 name="binomic.worker.restarts",
                 unit="{worker}",
             )
 
-            create_observable_gauge(
+            otel.create_observable_gauge(
                 name="binomic.worker.heartbeat.age",
                 unit="s",
                 observe=self._heartbeat_ages,
@@ -97,7 +89,7 @@ class Master:
             module_name=self._module_name,
             consumer=consumer,
             policy=self._policy.worker_policy,
-            presence=SubprocessPresence(heartbeat),
+            presence=SlavePresence(heartbeat),
             **self._broker_kwargs,
         )
 
@@ -182,6 +174,7 @@ class Master:
                     self._run_proc(consumer)
 
     async def start(self) -> None:
+        """Spawn the configured workers and run the supervision loop."""
 
         try:
             for i in range(self._policy.workers):
@@ -193,6 +186,7 @@ class Master:
             await self.close()
 
     async def close(self) -> None:
+        """Terminate every supervised worker, escalating to kill on timeout."""
 
         with anyio.CancelScope(shield=True):
             for process in self._subprocesses.values():

@@ -60,6 +60,18 @@ docker compose -f assets/cluster/docker-compose.yml down
 `down` 会连同容器内 `/tmp/nodes.conf` 一起丢弃（节点配置写在容器文件系统，
 不使用数据卷），因此重复 `up` 不会有残留状态。
 
+## CI
+
+`.github/workflows/pytest.yml` 的 `sentinel` job 在 GitHub 托管的 Ubuntu runner 上：
+
+1. `docker compose -f assets/sentinel/docker-compose.yml up -d --wait` 启动拓扑；
+2. 用 `redis` 客户端确认 `26380` 能把 `binomic` 解析到 `6380`，避免拓扑没起来时
+   套件静默 skip；
+3. 运行 `uv run pytest test_integration/ha/test_sentinel_pipeline.py -m ha -q`；
+4. 无论测试结果如何，最后 `docker compose ... down -v` 清理容器。
+
+Cluster 套件不在 CI 中运行——框架本身不支持 Cluster，其用例验证的是已知的不兼容性。
+
 ## 与测试套件的联动
 
 ```bash

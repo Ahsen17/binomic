@@ -12,10 +12,11 @@ class BinomicConfig(BaseStruct):
     ``concurrency`` the number of tasks each worker executes concurrently;
     every stream in ``queues`` is consumed by all workers.
     ``max_attempts`` is how many times a message may be delivered before it is
-    dropped. ``task_timeout`` is a message's total delivery deadline in
-    seconds; ``read_count`` and ``poll_interval`` shape each worker's fetch
-    loop; ``heartbeat_interval`` and ``reclaim_interval`` set the liveness
-    beat and crash-recovery cadence.
+    moved to the DLQ. ``task_timeout`` is a message's total delivery deadline
+    in seconds, measured from enqueue; execution receives the part still left
+    after the queue wait. ``read_count`` and ``poll_interval`` shape each
+    worker's fetch loop; ``heartbeat_interval`` and ``reclaim_interval`` set
+    the liveness beat and crash-recovery cadence.
     ``capacity`` caps every queue's unacknowledged total (its stream length:
     messages stay in the stream from submission until ack or dead), so
     submissions onto a full queue are rejected immediately; unlimited by

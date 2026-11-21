@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from binomic.worker import Master, MasterPolicy, Worker, WorkerHandler, WorkerPolicy
-from binomic.worker.presence import SubprocessPresence
+from binomic.worker.presences import SlavePresence
 
 if TYPE_CHECKING:
     from multiprocessing.sharedctypes import Synchronized
@@ -55,7 +55,7 @@ def make_master(master_policy: MasterPolicy) -> Callable[..., Master]:
 
         fields: dict[str, Any] = {
             "broker_dsn": "redis://localhost:6379/0",
-            "module_name": "binomic",
+            "module_name": "tests",
             "policy": master_policy,
         }
         fields.update(overrides)
@@ -78,7 +78,7 @@ def make_worker(
             "module_name": "binomic_no_such_pkg",
             "consumer": "test-worker",
             "policy": worker_policy,
-            "presence": SubprocessPresence(heartbeat),
+            "presence": SlavePresence(heartbeat),
         }
         fields.update(overrides)
 
@@ -121,7 +121,7 @@ def set_backoff(monkeypatch: pytest.MonkeyPatch) -> Callable[[float], None]:
 
         monkeypatch.setattr(
             WorkerHandler,
-            "_backoff",
+            "backoff",
             lambda self, attempt: seconds,
         )
 

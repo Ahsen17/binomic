@@ -1,50 +1,56 @@
 from collections.abc import Awaitable, Callable, Iterable, Mapping
-from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from datetime import UTC, datetime, timedelta, tzinfo
+from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
-if TYPE_CHECKING:
-    from datetime import tzinfo
-
-
 __all__ = ("TaskScheduler",)
 
 
 class TaskScheduler:
-    """A thin APScheduler wrapper over generic callables.
+    """A thin APScheduler wrapper over plain callables.
 
-    ``delay``/``cron``/``interval`` register plain callables — task semantics
-    are validated at the call sites, not here. The client owns one instance
-    for delay submissions and cron/interval registrations; each worker handler
-    owns another for retry backoff only.
+    It knows nothing about task specs: callers supply the callable, the
+    trigger value and the arguments. The client owns one for cron/interval
+    delivery; every handler owns one for retry backoff. Times default to UTC.
     """
 
     def __init__(self, timezone: "tzinfo" = UTC) -> None:
 
         self._timezone = timezone
         self._scheduler: AsyncIOScheduler | None = None
-
         self._running = False
 
     @property
     def running(self) -> bool:
+        """Whether ``start`` has been called and ``close`` has not."""
 
         return self._running
 
+    @property
+    def client(self) -> "AsyncIOScheduler":
+        """The underlying scheduler, created and started on first access."""
+
+        if self._scheduler is None:
+            self._scheduler = AsyncIOScheduler()
+            self._scheduler.start()
+
+        return self._scheduler
+
     def start(self) -> None:
+        """Start the scheduler; idempotent while already running."""
 
         if self._running:
             return
 
-        self._ensure_scheduler()
-
+        self.client  # noqa: B018
         self._running = True
 
     def close(self) -> None:
+        """Shut the scheduler down without waiting for running jobs."""
 
         if not self._running:
             return
@@ -55,14 +61,6 @@ class TaskScheduler:
 
         self._running = False
 
-    def _ensure_scheduler(self) -> "AsyncIOScheduler":
-
-        if self._scheduler is None:
-            self._scheduler = AsyncIOScheduler()
-            self._scheduler.start()
-
-        return self._scheduler
-
     def delay(
         self,
         func: Callable[..., Any | Awaitable[Any]],
@@ -71,8 +69,13 @@ class TaskScheduler:
         args: Iterable[Any] | None = None,
         kwargs: Mapping[str, Any] | None = None,
     ) -> None:
+        """Run ``func`` once, ``delay`` seconds from now.
 
-        self._ensure_scheduler().add_job(
+        Misfire grace is disabled, so a late job still runs instead of being
+        silently dropped.
+        """
+
+        self.client.add_job(
             func=func,
             trigger=DateTrigger(
                 run_date=datetime.now(self._timezone) + timedelta(seconds=delay),
@@ -91,8 +94,9 @@ class TaskScheduler:
         args: Iterable[Any] | None = None,
         kwargs: Mapping[str, Any] | None = None,
     ) -> None:
+        """Run ``func`` on the crontab expression ``cron``."""
 
-        self._ensure_scheduler().add_job(
+        self.client.add_job(
             func=func,
             trigger=CronTrigger.from_crontab(
                 expr=cron,
@@ -110,8 +114,9 @@ class TaskScheduler:
         args: Iterable[Any] | None = None,
         kwargs: Mapping[str, Any] | None = None,
     ) -> None:
+        """Run ``func`` every ``interval`` seconds."""
 
-        self._ensure_scheduler().add_job(
+        self.client.add_job(
             func=func,
             trigger=IntervalTrigger(
                 seconds=interval,

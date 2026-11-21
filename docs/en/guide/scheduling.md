@@ -1,9 +1,9 @@
 # Task modes and scheduling
 
 A task's mode is fixed **at declaration time**, and it decides when the task
-runs: immediately on submission, once after a deferred wait, or repeatedly on
-a schedule. There are four modes — `direct`, `delay`, `cron`, and `interval`.
-See [Architecture](architecture.md) for where they sit in the submission path.
+runs: immediately on submission, or repeatedly on a schedule. There are three
+modes — `direct`, `cron`, and `interval`. See [Architecture](architecture.md)
+for where they sit in the submission path.
 
 ## Declaring tasks
 
@@ -29,16 +29,10 @@ exc)` is called once; the contract is described in
 | Mode | Extra argument | When it runs | Takes arguments |
 |-|-|-|-|
 | `direct` | none (default) | immediately on submission | yes |
-| `delay` | `delay`: seconds to wait | once, the given number of seconds after submission | yes |
 | `cron` | `cron`: cron expression string | repeatedly, on the cron expression | **no** |
 | `interval` | `interval`: interval in seconds | repeatedly, every given number of seconds | **no** |
 
 ```python
-# Run once, 10 seconds later
-@task("default", mode="delay", delay=10)
-def delayed() -> None: ...
-
-
 # Run every 5 minutes (cron expression: minute/hour/day/month/weekday)
 @task("default", mode="cron", cron="*/5 * * * *")
 def periodic() -> None: ...
@@ -52,17 +46,19 @@ def poll() -> None: ...
 Validation happens immediately at declaration time, raising `ValueError` for
 anything invalid:
 
-- a missing required argument: the `delay` / `cron` / `interval` modes each
-  require their corresponding argument;
+- a missing required argument: the `cron` / `interval` modes each require their
+  corresponding argument;
 - a periodic task that takes arguments: functions in `cron` and `interval`
   mode **must take no arguments** — a periodic firing has no call arguments to
-  pass (see the next section for why).
+  pass (see the next section for why);
+- an unsupported mode: `mode` accepts only the three above; any other value
+  (including the old `"delay"`) raises `ValueError` at declaration time.
 
-Delay and interval values only have to be **positive**, and that is checked by
-the decorator at **declaration time** (`delay` / `interval` `<= 0` raises
-`ValueError`). `TaskScheduler` itself is a generic callable wrapper that knows
-nothing about task semantics, so it performs no such validation — see "Using
-the scheduler directly" below.
+Interval values only have to be **positive**, and that is checked by the
+decorator at **declaration time** (`interval <= 0` raises `ValueError`).
+`TaskScheduler` itself is a generic callable wrapper that knows nothing about
+task semantics, so it performs no such validation — see "Using the scheduler
+directly" below.
 
 ```{note}
 `cron` and `interval` fire according to the **scheduler's timezone**, which
@@ -74,26 +70,21 @@ takes no timezone configuration, so `cron="0 9 * * *"` means **9 AM UTC**, not
 
 ## Submitting tasks
 
-`Binomic.submit` hands a `Message` to the client, but it **supports only two
-modes**:
-
-- `direct`: the message is written to the task's declared queue immediately;
-- `delay`: the message is handed to the scheduler and written to the queue
-  once the delay elapses.
-
-Calling `submit` on a `cron` or `interval` task raises `ValueError` — periodic
-tasks do not accept one-off submissions; their firings are registered
-automatically by the client at startup (see the next section). Which stream a
-message lands in is decided by the **queue in the task declaration**; `submit`
-does not take a caller-specified queue.
+`Binomic.submit` hands a `Message` to the client, but it **supports only the
+`direct` mode**: the message is written to the task's declared queue
+immediately, and the broker's `MessageEntry` is returned (stream entry id,
+queue, message and enqueue stamp). When an internal script failure makes the
+broker degrade, the result is `None` and `submit` passes it through. Calling
+`submit` on a `cron` or `interval` task raises `ValueError` — periodic tasks
+do not accept one-off submissions; their firings are registered automatically
+by the client at startup (see the next section). Which stream a message lands
+in is decided by the **queue in the task declaration**; `submit` does not take
+a caller-specified queue.
 
 ```{note}
-A `delay` submission lives in the client process's in-memory scheduler and is
-**not durable**: it is lost when the process exits, and on-time delivery
-presupposes the client process staying alive until the delay elapses. Delayed
-delivery that survives restarts is outside the framework's promise; if you
-need it, provide it yourself (e.g. persist the intent and re-submit on
-startup).
+The framework offers no one-off delayed task mode. To run something after a
+delay, wait inside the task function, or use the public `TaskScheduler.delay()`
+to schedule any callable as a deferred job.
 ```
 
 ```python
@@ -140,7 +131,9 @@ asyncio.run(main())
 
 `TaskScheduler` takes plain callables and knows nothing about `TaskSpec`: the
 delay, cron expression and interval are supplied by the caller, and `func` is
-invoked as-is when a job is due.
+invoked as-is when a job is due. `delay()` is a generic scheduling primitive,
+not a task mode: a worker's failed redelivery uses it to defer
+`broker.retry`.
 
 - **Requires a running event loop**: `TaskScheduler` is built on APScheduler's
   `AsyncIOScheduler`, which captures the current event loop in place when
@@ -159,8 +152,8 @@ invoked as-is when a job is due.
   construction error from APScheduler.
 - **Where validation lives**: task semantics (mode, required arguments,
   positivity, `on_dead` being callable) are checked by the `@task` decorator
-  at **declaration time** and re-checked by `Binomic.submit` at **submission
-  time**; the scheduler only schedules. A worker's failed redelivery calls
+  at **declaration time**; `Binomic.submit` accepts only `direct` tasks. The
+  scheduler only schedules. A worker's failed redelivery calls
   `scheduler.delay` directly to defer `broker.retry` (see
   [Reliability](reliability.md)).
 - **Lifecycle**: jobs only start firing after `start()` is called, and `close()`
@@ -171,6 +164,6 @@ invoked as-is when a job is due.
 - **A late job still runs**: jobs scheduled through `delay` carry
   `misfire_grace_time=None`, so even when the scheduler only gets around to one
   after its `run_date` (the event loop was busy, or the process stalled), it
-  still fires instead of being discarded as a missed run — a deferred delivery
+  still fires instead of being discarded as a missed run — a deferred job
   stands for work that must happen; `cron` / `interval` keep APScheduler's
   default grace.

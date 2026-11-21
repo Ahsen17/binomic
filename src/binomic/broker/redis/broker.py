@@ -7,11 +7,14 @@ import structlog
 from redis.asyncio import BlockingConnectionPool, Redis
 from redis.exceptions import ResponseError
 
-from binomic.broker.exceptions import DLQEntryNotFoundError, QueueCapacityError
-from binomic.broker.message import DLQRecordEntry, Message, MessageEntry
+from binomic.broker.exceptions import (
+    DeadLetterEntryNotFoundError,
+    QueueCapacityError,
+)
+from binomic.broker.message import DeadLetterEntry, Message, MessageEntry
 from binomic.broker.protocols import (
     Broker,
-    BrokerDlqCapability,
+    BrokerDeadLetterCapability,
     BrokerLifecycleCapability,
     BrokerTelemetryCapability,
 )
@@ -59,7 +62,7 @@ class RedisBroker(
     Broker,
     BrokerLifecycleCapability,
     BrokerTelemetryCapability,
-    BrokerDlqCapability,
+    BrokerDeadLetterCapability,
 ):
     """Redis Streams broker backed by atomic Lua scripts.
 
@@ -370,7 +373,7 @@ class RedisBroker(
         self,
         queue: str,
         message_id: str,
-    ) -> "dict[str, str] | None":
+    ) -> dict[str, str] | None:
 
         resp = await self._invoke_script(
             script="context",
@@ -389,7 +392,7 @@ class RedisBroker(
             if isinstance(key, str) and isinstance(value, str)
         }
 
-    async def observe(self, queue: str) -> "tuple[int, float | None] | None":
+    async def observe(self, queue: str) -> tuple[int, float | None] | None:
 
         resp = await self._invoke_script(
             script="observe",
@@ -421,7 +424,7 @@ class RedisBroker(
         queue: str,
         limit: int = 50,
         cursor: str | None = None,
-    ) -> "tuple[list[DLQRecordEntry], str | None]":
+    ) -> tuple[list["DeadLetterEntry"], str | None]:
 
         if not 1 <= limit <= _DLQ_LIST_LIMIT_MAX:
             raise ValueError(
@@ -447,21 +450,21 @@ class RedisBroker(
         more = len(raw) > limit
         raw = raw[:limit]
 
-        records: list[DLQRecordEntry] = []
+        records: list[DeadLetterEntry] = []
 
         for entry_id, _fields in raw:
             body = await client.hget(self.get_dlq_hash_key(queue), entry_id)
 
             if body is not None:
                 records.append(
-                    DLQRecordEntry.from_entry(
+                    DeadLetterEntry.from_entry(
                         MessageEntry.from_json(cast("str", body)),
                     ),
                 )
 
         return records, raw[-1][0] if more else None
 
-    async def dlq_read(self, queue: str, entry_id: str) -> "DLQRecordEntry | None":
+    async def dlq_read(self, queue: str, entry_id: str) -> "DeadLetterEntry | None":
 
         body = await self._ensure_client().hget(
             name=self.get_dlq_hash_key(queue),
@@ -471,14 +474,14 @@ class RedisBroker(
         if body is None:
             return None
 
-        return DLQRecordEntry.from_entry(MessageEntry.from_json(cast("str", body)))
+        return DeadLetterEntry.from_entry(MessageEntry.from_json(cast("str", body)))
 
     async def dlq_replay(self, queue: str, entry_id: str) -> "MessageEntry | None":
 
         record = await self.dlq_read(queue, entry_id)
 
         if record is None:
-            raise DLQEntryNotFoundError(queue=queue, entry_id=entry_id)
+            raise DeadLetterEntryNotFoundError(queue=queue, entry_id=entry_id)
 
         message = Message(
             task=record.message.task,
@@ -499,6 +502,11 @@ class RedisBroker(
         return entry
 
     async def dlq_prune(self, queue: str, retention: float) -> int:
+        """Delete DLQ records older than ``retention`` seconds; return the count.
+
+        ``retention`` must be positive. Deletion is bounded to one batch per
+        call and degrades to ``0`` on script failure.
+        """
 
         if retention <= 0:
             raise ValueError(f"`retention` must be positive, got {retention}")

@@ -35,9 +35,11 @@ spans or metrics and writes no trace context to Redis, so behaviour matches a
 build without observability. structlog logging is **not** governed by this
 switch and always flows as configured.
 
-Enabling it without the extra installed raises an instructive `RuntimeError`
-when `Binomic` is constructed (fail-fast) instead of silently degrading; a
-standalone `Master` is validated at construction the same way.
+Without the extra installed, the module-level `binomic.otel.otel` is `None`:
+a `Binomic` / `Master` / `Worker` with `otel_enabled` set skips every telemetry
+call and emits nothing (logging still flows). Constructing `Telemetry()`
+directly raises an instructive `RuntimeError`, which makes the missing
+dependency explicit.
 
 ### Litestar
 
@@ -89,8 +91,8 @@ PRODUCER span and stores the current W3C trace context (`traceparent`,
 `tracestate`, `baggage`) in the broker's dedicated context store (the Redis
 implementation uses `{namespace}:{queue}:context`, keyed by message id). The
 message envelope (`Message` / `MessageEntry`) carries no telemetry fields.
-Direct tasks write it during the enqueue; delayed tasks capture it at submit
-time and write it when the scheduled enqueue fires.
+Every delivery (a `direct` submission or each `cron` / `interval` round)
+writes it during its own enqueue.
 
 ### Worker subprocesses
 
@@ -247,7 +249,7 @@ brokers that implement the capability.
 - context capture/read failures, span error marking and gauge callback
   failures are swallowed and downgraded to debug logs, never interrupting
   delivery, execution or acks; creating instruments and opening spans relies on
-  the OTel API's no-throw contract and on `ensure_available()` when telemetry is
-  enabled;
-- `ensure_available()` is the only entry point that raises on purpose: enabling
-  telemetry without the extra fails immediately.
+  the OTel API's no-throw contract;
+- without the extra `otel` is `None` and every call site skips telemetry;
+  constructing `Telemetry()` is the only deliberate failure point in the
+  telemetry module.

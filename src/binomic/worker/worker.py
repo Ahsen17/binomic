@@ -5,18 +5,14 @@ import anyio
 import structlog
 
 from binomic.broker import (
-    BrokerDlqCapability,
+    BrokerDeadLetterCapability,
     BrokerFactory,
     BrokerLifecycleCapability,
     BrokerTelemetryCapability,
     MessageEntry,
 )
-from binomic.otel import (
-    QUEUE_NAME,
-    WORKER_CONSUMER,
-    create_observable_gauge,
-    create_up_down_counter,
-)
+from binomic.otel import otel
+from binomic.otel.signatures import QUEUE_NAME, WORKER_CONSUMER
 
 from .handler import WorkerHandler
 
@@ -29,14 +25,14 @@ if TYPE_CHECKING:
     from binomic.broker import Broker
 
     from .policies import WorkerPolicy
-    from .presence import SubprocessPresence
+    from .presences import SlavePresence
+
+
+__all__ = ("Worker",)
 
 
 logger = structlog.stdlib.get_logger(__name__)
 
-# How often the worker sweeps DLQ records past `dlq_retention` for deletion.
-# Deletion lands at most one sweep after the retention elapses, which is
-# immaterial at retention scales; the cadence stays an internal constant.
 DLQ_PRUNE_INTERVAL: Final[float] = 60.0
 
 
@@ -55,8 +51,8 @@ class Worker:
         module_name: str,
         consumer: str,
         policy: "WorkerPolicy",
-        presence: "SubprocessPresence",
-        **broker_kwargs: Any,
+        presence: "SlavePresence",
+        **broker_config: Any,
     ) -> None:
 
         self._broker_dsn = broker_dsn
@@ -64,7 +60,7 @@ class Worker:
         self._consumer = consumer
         self._policy = policy
         self._presence = presence
-        self._broker_kwargs = broker_kwargs
+        self._broker_config = broker_config
 
         self._broker: Broker | None = None
         self._timers: TaskGroup | None = None
@@ -80,7 +76,7 @@ class Worker:
                 dsn=self._broker_dsn,
                 queues=self._policy.queues,
                 namespace=f"{self._module_name}",
-                **self._broker_kwargs,
+                **self._broker_config,
             ).create()
 
             if isinstance(self._broker, BrokerLifecycleCapability):
@@ -110,12 +106,14 @@ class Worker:
         return self._terminate
 
     async def start(self) -> None:
+        """Build the broker, handler and terminate event without consuming."""
 
         await self._ensure_broker()
         await self._ensure_handler()
         self._ensure_terminate()
 
     async def close(self) -> None:
+        """Stop pulling, cancel in-flight tasks and release the broker."""
 
         if self._terminate is not None:
             if not self._terminate.is_set():
@@ -147,8 +145,6 @@ class Worker:
 
     def _setup_queue_gauges(self) -> None:
 
-        # Callbacks run on the SDK's collection thread, so they read a copy:
-        # iterating the live dict while the loop refreshes it would race.
         def depth() -> "Iterable[tuple[float, dict[str, str]]]":
 
             return [
@@ -166,16 +162,17 @@ class Worker:
 
             return observations
 
-        create_observable_gauge(
-            name="binomic.queue.depth",
-            unit="{message}",
-            observe=depth,
-        )
-        create_observable_gauge(
-            name="binomic.queue.oldest_pending.age",
-            unit="s",
-            observe=oldest_age,
-        )
+        if otel is not None:
+            otel.create_observable_gauge(
+                name="binomic.queue.depth",
+                unit="{message}",
+                observe=depth,
+            )
+            otel.create_observable_gauge(
+                name="binomic.queue.oldest_pending.age",
+                unit="s",
+                observe=oldest_age,
+            )
 
     async def _observe_queues(self, terminate: "Event") -> None:
 
@@ -218,9 +215,9 @@ class Worker:
         if self._policy.dlq_retention is None:
             return
 
-        if not isinstance(broker, BrokerDlqCapability):
+        if not isinstance(broker, BrokerDeadLetterCapability):
             logger.debug(
-                "DLQ pruning unavailable: broker lacks BrokerDlqCapability",
+                "DLQ pruning unavailable: broker lacks BrokerDeadLetterCapability",
                 consumer=self._consumer,
             )
 
@@ -250,6 +247,7 @@ class Worker:
             await anyio.sleep(self._policy.poll_interval)
 
     async def arun(self) -> None:  # noqa: C901
+        """Run the pull/execute loop until ``close`` sets the terminate event."""
 
         await self.start()
 
@@ -261,8 +259,8 @@ class Worker:
             BrokerTelemetryCapability,
         )
 
-        if self._policy.otel_enabled:
-            self._inflight = create_up_down_counter(
+        if self._policy.otel_enabled and otel is not None:
+            self._inflight = otel.create_up_down_counter(
                 name="binomic.worker.inflight.tasks",
                 unit="{task}",
             )
@@ -349,6 +347,7 @@ class Worker:
             await self.close()
 
     def run(self) -> None:
+        """Subprocess entry point: run the init hook, then ``arun``."""
 
         if (init := self._policy.worker_init) is not None:
             init()

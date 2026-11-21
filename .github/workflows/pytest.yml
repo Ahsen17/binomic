@@ -22,6 +22,7 @@ jobs:
               - 'src/**'
               - 'tests/**'
               - 'test_integration/**'
+              - 'assets/**'
               - 'pyproject.toml'
               - 'uv.lock'
               - 'Makefile'
@@ -68,3 +69,34 @@ jobs:
 
       - name: Integration tests
         run: uv run pytest test_integration -m integration
+
+  sentinel:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+
+      - name: Sync dependencies
+        run: uv sync --dev
+
+      - name: Start Sentinel topology
+        run: docker compose -f assets/sentinel/docker-compose.yml up -d --wait
+
+      - name: Verify Sentinel topology
+        run: |
+          uv run python -c "from redis import Redis; r = Redis(port=26380, socket_timeout=5); addr = r.execute_command('SENTINEL', 'get-master-addr-by-name', 'binomic'); assert addr and int(addr[1]) == 6380, addr; print('Sentinel topology is reachable')"
+
+      - name: Sentinel tests
+        run: uv run pytest test_integration/ha/test_sentinel_pipeline.py -m ha -q
+
+      - name: Stop Sentinel topology
+        if: always()
+        run: docker compose -f assets/sentinel/docker-compose.yml down -v

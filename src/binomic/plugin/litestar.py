@@ -8,7 +8,7 @@ if TYPE_CHECKING:
     from binomic.client import BinomicConfig
 
 try:
-    import litestar  # noqa: F401
+    import litestar  # noqa: F401  # pyright: ignore[reportMissingImports, reportUnusedImport]
     from litestar.di import Provide  # pyright: ignore[reportMissingImports]
     from litestar.plugins import InitPluginProtocol  # pyright: ignore[reportMissingImports]
 
@@ -27,7 +27,13 @@ __all__ = ("BinomicPlugin",)
 
 
 class BinomicPlugin(InitPluginProtocol):
-    """Binomic plugin for litestar."""
+    """Wire a Binomic client into a Litestar application.
+
+    ``app_name`` doubles as the client's ``module_name``, so task discovery
+    and the Redis namespace follow it. The plugin registers a
+    ``BinomicFactory`` in ``app.state``, exposes a ``binomic`` dependency,
+    and enters the client's async context from the application lifespan.
+    """
 
     _binomic_factory_state_key: ClassVar[str] = "binomic_factory"
 

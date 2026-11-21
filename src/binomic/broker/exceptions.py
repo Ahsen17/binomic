@@ -1,7 +1,7 @@
 from binomic.base import BinomicError
 
 __all__ = (
-    "DLQEntryNotFoundError",
+    "DeadLetterEntryNotFoundError",
     "QueueCapacityError",
 )
 
@@ -24,7 +24,7 @@ class QueueCapacityError(BinomicError):
         )
 
 
-class DLQEntryNotFoundError(BinomicError):
+class DeadLetterEntryNotFoundError(BinomicError):
     """Exception raised when a DLQ entry id has no record to operate on.
 
     ``Broker.dlq_replay`` raises it when the entry was never in the DLQ or
@@ -37,4 +37,6 @@ class DLQEntryNotFoundError(BinomicError):
         self.queue = queue
         self.entry_id = entry_id
 
-        super().__init__(f"DLQ entry not found (queue={queue}, entry_id={entry_id})")
+        super().__init__(
+            f"Dead letter entry not found (queue={queue}, entry_id={entry_id})",
+        )
